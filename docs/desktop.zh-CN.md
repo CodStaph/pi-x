@@ -20,6 +20,17 @@ npm run desktop:dev
 
 ## 构建 App 与 DMG
 
+本地自用、不需要签名的安装包：
+
+```bash
+npm install
+npm run desktop:build:local
+```
+
+它与下面的正式构建流程相同，只是合并了 `src-tauri/tauri.local.conf.json`，把 `bundle.createUpdaterArtifacts` 关掉，因此不需要 updater 私钥；代价是产物**不能自动更新**。
+
+签名发布（需要 updater 私钥，见 [桌面升级与发布说明](./desktop-updates.md)）：
+
 ```bash
 npm install
 npm run desktop:build

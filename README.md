@@ -11,14 +11,17 @@
 - Continue from any earlier message as a branch, or fork the conversation into an independent session.
 - Manage models, OAuth/API keys, custom model configuration, skills, and plugins.
 - Switch Git worktrees from the sidebar and browse project files.
-- Preview source code, diffs, Markdown, images, audio, PDF, and DOCX files.
+- Preview source code, diffs, Markdown, images, audio, PDF, and DOCX files, and edit text files in place.
+- The right sidebar's file browser and terminal panes now stack vertically instead of sitting side by side.
+- An embedded browser window shares the lower split pane with the terminal.
+- Terminal shells resolve WSL → Git Bash → cmd on Windows, defaulting to the first available.
 - Dark mode, automatic session naming, a completion sound, and restored run state.
 - A weekly check of the latest stable `pi-agent-desktop` GitHub Release, with an in-app notice only when the installed app is older.
 - One upgrade button installs a complete, signed new build of Pi Agent and restarts automatically.
 
-![Pi Agent light mode](./docs/screenshots/pi-agent-light@2x.png)
+![Pi Agent light mode](./docs/screenshots/pi-agent-light.webp)
 
-![Pi Agent dark mode](./docs/screenshots/pi-agent-dark@2x.png)
+![Pi Agent dark mode](./docs/screenshots/pi-agent-dark.webp)
 
 **[⬇️ Download Pi Agent (macOS / Windows)](https://github.com/abcwyc/pi-agent-desktop/releases)**
 
@@ -38,6 +41,15 @@ Builds are available from [GitHub Releases](https://github.com/abcwyc/pi-agent-d
 Official releases support Apple Silicon Macs running macOS 11 or later, Windows 10/11 x64, and Linux x64 distributions with WebKitGTK 4.1 and GTK 3. The desktop package bundles the Next.js server, the Node.js runtime, and the current Pi SDK, so the local server starts with the app — no separate terminal, Node.js installation, or manually started web server is required.
 
 > Installing Pi Agent gives you the agent inside the app, but it does not install a global `pi` command. If you also want the Pi CLI in your terminal, install it separately by following the [pi project](https://github.com/earendil-works/pi) instructions.
+
+> **macOS blocks the first launch**: the macOS build is not yet signed with an Apple
+> Developer ID or notarized, so Gatekeeper may say the developer cannot be verified or
+> that the app "is damaged and can't be opened" (Homebrew installs included). Click
+> "Open Anyway" in System Settings › Privacy & Security, or run:
+>
+> ```bash
+> xattr -dr com.apple.quarantine "/Applications/Pi Agent.app"
+> ```
 
 Before signed auto-updates can be used for the first time, an older build without the updater has to be replaced by manually installing a signed one. Upgrades then happen from Settings.
 
@@ -161,6 +173,11 @@ npm run release:verify
 ## Desktop Packaging
 
 ```bash
+# Local, unsigned installer — no updater signing key required
+npm run desktop:build:local
+
+# Signed release build — requires TAURI_SIGNING_PRIVATE_KEY and the matching
+# updater public key (see docs/desktop-updates.md)
 npm run desktop:build
 ```
 
@@ -173,7 +190,7 @@ The desktop build:
 
 On Linux, the package requires a WebKitGTK 4.1 runtime and GTK 3. It includes the Node.js runtime, so users do not need to install Node.js separately.
 
-Local builds do not register the production updater and cannot accept official updates. Official releases must inject the updater public key through GitHub Actions and sign with the matching private key.
+Local builds do not register the production updater and cannot accept official updates — `desktop:build:local` layers `src-tauri/tauri.local.conf.json` to skip updater artifact signing, while `desktop:build` is the release path and fails without the private key. Official releases must inject the updater public key through GitHub Actions and sign with the matching private key.
 
 ## Upstream Sync And Releases
 

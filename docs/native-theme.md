@@ -65,7 +65,11 @@ the intent described here.
 **Palette.** The canvas is warm off-white (`--bg: #f7f7f5`), and pure white is reserved for
 controls and elevated surfaces (`--surface`). The accent is near-black (`#1d1d1f`, near-white
 in dark mode) rather than a brand colour. Emphasis comes from contrast, not hue. `--text-dim`
-stays at a value that clears 3:1 contrast because it carries real labels.
+stays at a value that clears 3:1 contrast because it carries real labels; inside the sidebar
+(light mode) it is darkened to clear 4.5:1, and `--text-meta` (10px message footnotes) does too.
+The two exceptions to the near-black accent are text selection and keyboard focus rings: they
+use the system `AccentColor` (`--selection`, `--focus-ring`, behind an `@supports` query that
+also requires `color-mix`) so they read as native. Browsers without it keep the neutral values.
 
 **Shape and motion.** Radii come from `--radius-sm/md/lg/xl` (6/8/12/16px). Controls are
 `--control-height-sm` 28px or `--control-height` 32px. Elevation uses the four
@@ -81,7 +85,11 @@ right-panel header row and the file-panel expand button.
 - Header rows (New chat / folder / branch) are flat and full-width, Claude-Desktop style.
 - Refresh stays hidden until you hover the folder row.
 - Projects render as a Codex-style tree. Session rows are 28px, matching the view-switcher
-  tabs.
+  tabs. Project and session rows share one inset pill (10px margin, 8px radius); a project row
+  is 30px (34px on touch) and has no disclosure chevron, because its folder glyph already shows
+  open / closed. Session titles share the project name's left edge, and a plain row keeps its
+  hidden chat glyph in layout so running / unread indicators land in the same slot.
+  titles are Regular (400) even when selected.
 - A selected row has no accent ring: its border blends into the selected background.
 - A row's "…" menu is always visible on touch devices.
 
@@ -96,12 +104,27 @@ existing border: hover tints it and dragging darkens it, and neither adds a seco
 
 **Settings.** Settings is an in-window preferences sheet, not a page. It is 1040×700 at most
 and clamped with `min()` on small windows. The scrim is light but still makes the app read as
-inactive. General splits into two columns at ≥880px.
+inactive. General splits into two columns at ≥880px. The dialog follows the host platform through
+`<html data-platform>` (`lib/ui-platform.ts`, set when it mounts, in the browser too): macOS gets a
+centered preferences toolbar (icon over label, gray tile for the selection, no title), Windows and Linux
+get a left navigation pane with the content as a card under a title bar (≥900px; narrower windows keep the
+top tabs), with a Fluent switch and red corner close on Windows and a GNOME round close on Linux. Switches
+and sliders use the system `AccentColor` when on; buttons keep the near-black accent. Phones and the
+≤640px picker are untouched. ⌘, / Ctrl+, opens it at the last section.
 
 **Chat.** The composer aligns with the message column. Markdown tables wrap within the panel
 instead of scrolling (this reverts upstream #650). While a run is busy, fork/navigate actions
 on user messages are hidden with CSS (`data-session-busy`), not props, so message memoization
 survives.
+
+**Window background image.** An optional user picture is painted on `body::before` from the
+`has-app-background` block at the end of `native-theme.css`, driven by the `--app-bg-image`,
+`--app-bg-dim`, `--app-bg-blur` and `--app-bg-size` variables that `lib/app-background.ts`
+(and the pre-paint boot script in `lib/theme.ts`) write onto the root element. The dim tint
+is white on light themes and black on dark ones, so foreground contrast holds either way.
+The image is a bounded JPEG data URL in `localStorage`, not an agent-dir file, so the browser
+and desktop builds behave the same; when `has-app-background` is set, the shell, topbar, chat
+window, composer and right panel go transparent so the picture shows through.
 
 ## After an upstream merge
 

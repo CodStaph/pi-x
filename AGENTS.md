@@ -33,6 +33,13 @@ Typecheck: `node_modules/.bin/tsc --noEmit` · Lint: `npm run lint`
   `PI_WEB_DESKTOP_BUILD=1 node_modules/next/dist/bin/next build --webpack` then
   `E2E_SERVER_MODE=start PI_WEB_DESKTOP_BUILD=1 node e2e/run.mjs` (`next.config.ts` swaps
   `distDir` to `.next-desktop`, which is gitignored).
+- **Window geometry** is restored by `tauri-plugin-window-state`, registered in Rust only (no npm package, no capability entry) with `SIZE | POSITION | MAXIMIZED`. Never add `VISIBLE` (it would bring back a window hidden to the tray before quit; show/hide is owned here) or `DECORATIONS` (custom chrome). Closing hides the window, so geometry only matters across quit/relaunch; the plugin saves on `CloseRequested` and on `RunEvent::Exit`.
+- **`next dev` rewrites `AGENTS.md`**: it appends a "This is NOT the Next.js you know" block
+  to this file on every start. Run `git checkout -- AGENTS.md` before committing; it is not part of the work.
+- **The shell's `TEMP`/`TMP` are 8.3 short paths** (`C:\Users\ADMINI~1\...`). The e2e fixtures
+  compare absolute paths against what the app reports (long form) and fail at the file-tree
+  click. Point both at the long form when running `e2e/run.mjs`:
+  `TEMP='C:/Users/<user>/AppData/Local/Temp' TMP='...' node e2e/run.mjs`.
 
 ---
 
@@ -62,6 +69,8 @@ app/api/
   auth/login/[provider]/route.ts  GET OAuth/device-code SSE | POST manual code
   auth/logout/[provider]/route.ts POST OAuth logout
   auth/providers/route.ts         GET OAuth provider list
+  cost-currency/route.ts          GET/PUT cost-display currency + rate source
+  cost-currency/refresh/route.ts  POST fetch and persist the USD→CNY rate
   cwd/validate/route.ts           POST validate/select a cwd
   default-cwd/route.ts            POST create ~/pi-cwd-YYYYMMDD
   files/[...path]/route.ts        GET file contents for viewer
@@ -78,14 +87,24 @@ app/api/
   skills/route.ts                 GET/PATCH loaded skills and disable-model-invocation
   skills/install/route.ts         POST install skills through npx skills add
   skills/search/route.ts          GET/POST skills.sh search
+  scheduled-tasks/**              GET/POST tasks, PATCH/DELETE [id], POST [id]/run, GET [id]/runs, POST run seen, POST preview, GET events (SSE)
   worktrees/route.ts              GET list / POST create / PUT switch branch / DELETE git worktrees
   worktrees/fetch/route.ts        POST git fetch --prune + fresh branch lists
   desktop/read-images/route.ts    POST read natively-picked images into attachment payloads
   desktop/save/route.ts           POST copy a file to, or write bytes at, a natively-picked path
+  artifacts/settings/route.ts     GET/PUT the "artifacts in the side panel" prompt switch
 
 lib/
   agent-client.ts      typed fetch helper for /api/agent commands
+  artifacts.ts         `:::artifact` scanner, markdown encoding, version collection
+  artifact-store.ts    client store shared by ChatWindow, message cards and the artifact panel
+  artifact-settings.ts / artifact-guide-extension.ts  prompt switch file + `<artifacts>` prompt section
+  html-preview.ts      inline HTML/SVG/React preview detection, sandbox, srcdoc bootstrap, React document
+  preview-runtime.ts   loads public/preview-runtime/ (bundled React, Sucrase, Tailwind) for React previews
   app-prefs.ts         APP_PREF_KEYS + typed localStorage accessors (SSR/private-mode safe)
+  app-background.ts    window background image store (data-URL JPEG, dim/blur/fit) + root CSS projection
+  cost-currency.ts     cost-display currency + USD→CNY rate: guards, resolution, provider fetch (pure)
+  cost-currency-settings.ts  read/write `<agentDir>/desktop/cost-currency.json`
   desktop-connection.ts useDesktopConnection() — local server health probe for the reconnect banner
   desktop-native.ts    native dialogs, open/reveal path, external links, save/import, window lifecycle
   desktop-notify.ts    native completion notifications (skipped while the window is focused)
@@ -98,6 +117,7 @@ lib/
   npx.ts               npx runner used by skill install
   pi-types.ts          local structural types for pi SDK objects
   rpc-manager.ts      AgentSessionWrapper + registry + startRpcSession
+  scheduled-tasks/    scheduler, runner, cron, store, run index for scheduled tasks (see docs/agents/scheduled-tasks.md)
   session-reader.ts   SessionManager wrappers + path cache + buildSessionContext adapter
   tool-presets.ts     PRESET_NONE/DEFAULT/FULL + getPresetFromTools()
   types.ts            shared TypeScript types
@@ -113,6 +133,8 @@ components/
   MessageView.tsx     renders one message (user/assistant/toolCall/toolResult)
   BranchNavigator.tsx in-session branch switcher
   MarkdownBody.tsx    markdown renderer
+  HtmlPreviewBlock.tsx / HtmlPreviewErrorBar.tsx  inline previews and their error strip
+  ArtifactCard.tsx / ArtifactPanel.tsx / artifact-tabs.ts  artifact card in messages, right-panel tab
   ModelsConfig.tsx    modal for editing models.json (opened from sidebar bottom)
   EnabledModelsSection.tsx  model switches inside ModelsConfig, backed by enabledModels
   AgentsConfig.tsx    built-in subagent toggle + agent profile editor
@@ -120,6 +142,7 @@ components/
   SkillsConfig.tsx    modal for loaded/search/installable skills
   SettingsPanel.tsx   settings dialog; its General tab hosts the app intro, Version & Updates and the desktop-only switches
   AppUpdatesSection.tsx  Version & Updates block at the top of General
+  scheduled/          Scheduled page (list, detail, editor, run history) and its sidebar row
   desktop/DesktopAppSection.tsx  window/tray prefs; renders nothing outside Tauri
   FileExplorer.tsx    file tree inside sidebar
   FileIcons.tsx       file icon helpers
@@ -129,9 +152,12 @@ components/
 hooks/
   useAgentSession.ts       messages, streaming, SSE, fork/navigate, reconciliation; built-in slash commands (/session, bare /mcp)
   useAudio.ts              completion sound + AudioContext unlock
+  useAppBackground.ts      subscribes to the window background image store
+  useCostCurrency.ts       cost-display currency store + bound formatCost (Settings › Cost display)
   useDragDrop.ts           shared drag/drop state
   useIsMobile.ts           responsive breakpoint
   useKeyboardShortcuts.ts  Esc stops the running agent unless a field or nearer handler took it; Ctrl+Alt+N
+  useScheduledTasks.ts     shared store + SSE for scheduled tasks
   useTheme.ts              theme state
 ```
 
@@ -154,7 +180,9 @@ hooks/
 - [files-and-access.md](docs/agents/files-and-access.md): worktrees and project grouping, the file access allow-list (the `/api/files` security boundary), file tree visibility, web password throttling. Files: `app/api/files/**`, `app/api/cwd/**`, `app/api/worktrees/**`, `app/api/file-index/**`, `app/api/web-auth/**`, `proxy.ts`, `lib/path-security.ts`, `lib/file-access.ts`, `lib/linked-directory.ts`, `lib/session-file-references*.ts`, `lib/file-tree-visibility.ts`, `lib/worktree.ts`, `lib/paths.ts`, `lib/auth-throttle.ts`, `components/FileExplorer.tsx`.
 - [settings-ui.md](docs/agents/settings-ui.md): Plugins and Skills routes, sidebar group switches, the shared `SettingsUi` blocks every settings panel and add pane uses. Files: `app/api/plugins/**`, `app/api/skills/**`, `components/SettingsUi.tsx`, `components/settings-ui-helpers.ts`, `components/SkillsConfig.tsx`, `components/PluginsConfig.tsx`; also before adding a settings section or add pane.
 - [subagents.md](docs/agents/subagents.md): the built-in subagent setting, profiles and their files, run status, completion notifications. Files: `lib/subagent*.ts`, `app/api/subagents/**`, `components/AgentsConfig.tsx`.
+- [artifacts.md](docs/agents/artifacts.md): inline HTML/SVG/React previews and `:::artifact` blocks: what renders where, the sandbox rules and the desktop `about:srcdoc` allowance, the auto-run rule for scripted pages, the bundled React runtime (inlined, because sandboxed frames cannot reach localhost; `npm run preview-runtime` regenerates it), the fix flow and the prompt switch. Files: `lib/artifacts.ts`, `lib/artifact-store.ts`, `lib/html-preview.ts`, `lib/artifact-settings.ts`, `lib/artifact-guide-extension.ts`, `hooks/useArtifactPublisher.ts`, `hooks/useHtmlPreviewFrame.ts`, `lib/preview-runtime.ts`, `scripts/build-preview-runtime.mjs`, `public/preview-runtime/`, `components/Artifact*.tsx`, `components/HtmlPreview*.tsx`, `components/artifact-tabs.ts`, `app/api/artifacts/**`, `is_inline_frame_document` in `src-tauri/src/native_prefs.rs`.
 - [client-platform.md](docs/agents/client-platform.md): mobile software keyboard and viewport height, completion sound. Files: `hooks/useViewportHeight.ts`, `hooks/useAudio.ts`, the keyboard-open CSS.
+- [scheduled-tasks.md](docs/agents/scheduled-tasks.md): scheduled tasks (the Scheduled page): server-side scheduler and its lease, catch-up and overlap rules, read-only default, the run index that hides runs from the project tree, why shared state is on `globalThis`. Files: `lib/scheduled-tasks/**`, `app/api/scheduled-tasks/**`, `instrumentation-node.ts`, `hooks/useScheduledTasks.ts`, `components/scheduled/**`, the Scheduled row in `components/SessionSidebar.tsx`, the page overlay in `components/AppShell.tsx`.
 
 ---
 
@@ -166,7 +194,7 @@ hooks/
 pi can summarize the branch being left onto the one entered (`navigateTree(id, { summarize, customInstructions })`, a `branch_summary` entry that becomes the new leaf). In BranchNavigator a plain row click stays a plain switch — rows are also how branches are browsed, and a dialog on every click would be in the way — while rows of other branches offer "Summarize & switch" (hover; always shown on touch) with an optional focus line. That switch is server-first (`summarizeAndNavigate` in `useAgentSession`): the transcript to show only exists once pi has written the summary, so the view does not switch optimistically like a plain switch. It blocks like an LLM call, locks branch switching and the composer, and shows a progress strip in the composer whose Stop sends `abort_branch_summary` (pi answers `{ cancelled: true, aborted: true }` and the leaf stays put). `branch_summary` entries render as a summary card (`CompactionMessageView kind="branch_summary"`) and start a displayed turn; they used to be projected as a fake user bubble that offered Edit / Fork. `branchSummary.skipPrompt` has nothing to skip here, since the GUI never prompts.
 
 ### Cost and routing visibility (virtual models, cost by model, cache warming)
-pi 1.0's cost story is surfaced the way its TUI does. **Routed model:** under a virtual model (`registerVirtualModel`), `get_state.routedModel` carries the SDK's `routedModel` (the physical model of the latest response) and the composer shows `→ model • level` next to the selector, like pi's footer; `syncLiveModel` refreshes it on every state sync, and each run's end already refetches state. **Cost by model:** `lib/usage-breakdown.ts` ports pi's `getUsageCostBreakdown()` (not exported by the SDK — keep the port in step with `core/usage-totals.ts` on SDK bumps): assistant usage keyed by `provider/(responseModel ?? model)`, cache-warm `usage` entries by their model, tool results / compaction / branch summaries in one bucket. `computeSessionStats()` returns it as `costBreakdown`, `mergeSessionStats()` advances it with streamed messages, and the session panel lists it only when pi would (more than one row, or one row that is not the selected model). **Cache warming:** `get_state` / `get_session_stats` report `cacheWarming { mode, status }` (`settingsManager.getCacheWarmingMode()` + `cacheWarmingStatus`); `lib/cache-warming-display.ts` is a localized port of `formatCacheWarmingStatus()`, and the panel re-reads it through `GET /api/agent/[id]` each time it opens because warming advances on its own between runs (GET never starts a dormant session).
+pi 1.0's cost story is surfaced the way its TUI does. **Routed model:** under a virtual model (`registerVirtualModel`), `get_state.routedModel` carries the SDK's `routedModel` (the physical model of the latest response) and the composer shows `→ model • level` next to the selector, like pi's footer; `syncLiveModel` refreshes it on every state sync, and each run's end already refetches state. **Cost by model:** `lib/usage-breakdown.ts` ports pi's `getUsageCostBreakdown()` (not exported by the SDK — keep the port in step with `core/usage-totals.ts` on SDK bumps): assistant usage keyed by `provider/(responseModel ?? model)`, cache-warm `usage` entries by their model, tool results / compaction / branch summaries in one bucket. `computeSessionStats()` returns it as `costBreakdown`, `mergeSessionStats()` advances it with streamed messages, and the session panel lists it only when pi would (more than one row, or one row that is not the selected model). **Cache warming:** `get_state` / `get_session_stats` report `cacheWarming { mode, status }` (`settingsManager.getCacheWarmingMode()` + `cacheWarmingStatus`); `lib/cache-warming-display.ts` is a localized port of `formatCacheWarmingStatus()`, and the panel re-reads it through `GET /api/agent/[id]` each time it opens because warming advances on its own between runs (GET never starts a dormant session). **Currency:** every cost is a USD amount (neither the catalog prices nor `AgentUsage` carry a currency field). `lib/cost-format.ts` formats USD in the interface locale (`$` in en-US, `US$` in zh-CN) and converts to CNY when a rate is available; `hooks/useCostCurrency.ts` resolves the display currency from the preference (`auto` follows the interface language) and exposes a bound `formatCost`, so components never format a raw `$` themselves. The rate lives in `<agentDir>/desktop/cost-currency.json` (`app/api/cost-currency` GET/PUT + `/refresh`), is fetched server-side from Frankfurter or exchangerate.fun, and an absent rate falls back to USD rather than relabeling an unconverted number. Tests normalize the symbol/separators, so the currency formatting stays locale-independent.
 
 ### Classifier and image models (Settings › Models)
 pi ≥ 0.99 catalogs classifier (Jev) and image models (OpenRouter image models and others) beside chat models, but keeps them out of `/model`: a session reaches them only from codemode scripts (`models.classify()`, `models.generateImages()`), so codemode must be active — always with Code mode "Always on" (`+codemode`), otherwise only where an MCP server turned it on. `GET /api/models/nonchat` lists both types through `lib/nonchat-models.ts` (`getModelsOfType` for the catalog, `getAvailableOfType` for sign-in state; offline runtime) together with `readCodemodePreference()`. ModelsConfig has a `{ type: "nonchat" }` selection rendering `components/NonChatModelsDetail.tsx`, read-only, grouped by provider, whose Code mode notice links to Settings › MCP through `onOpenMcp` (SettingsPanel's `activateSection("mcp")`). pi never writes generated images to disk, so every tool-result image has a Save link (`downloadUrlAsFile`; native save dialog on desktop, browser download otherwise), named from the block's media type (`lib/result-image.ts`) because history serves large tool-result images from an API URL.
@@ -239,7 +267,7 @@ Disabling the last enabled model is refused with `409 { reason: "last-model" }`:
 On `ChatWindow` mount, `GET /api/agent/[id]` is called. If `state.isStreaming === true`, SSE is reconnected automatically. `thinkingLevel` and `isCompacting` are also synced from this response.
 
 ### Compaction & summarization-retry SSE events
-pi 0.86 emits `compaction_start`/`compaction_end` (the legacy `auto_compaction_*` names are gone — do not re-add their cases) plus `summarization_retry_scheduled/attempt_start/finished` when summary generation enters backoff. `handleAgentEvent` keeps `isCompacting` in sync and mirrors the retry counter into `summarizationRetry`, shown as "Compacting… (retry n/m)" on the compact control. `compaction_end.willRetry` deliberately leaves the counter in place so the countdown stays visible between compaction passes. Manual compact is a blocking POST — the button stays disabled until the response returns. The compact block renders whenever `onCompact && (!isStreaming || isCompacting)`: an auto-compaction mid-run must stay visible and abortable, which is exactly when `isStreaming && isCompacting`.
+pi 0.86 emits `compaction_start`/`compaction_end` (the legacy `auto_compaction_*` names are gone — do not re-add their cases) plus `summarization_retry_scheduled/attempt_start/finished` when summary generation enters backoff. `handleAgentEvent` keeps `isCompacting` in sync and mirrors the retry counter into `summarizationRetry`, shown as "Compacting… (retry n/m)" on the compact control. `compaction_end.willRetry` deliberately leaves the counter in place so the countdown stays visible between compaction passes. Manual compact is a blocking POST — the button stays disabled until the response returns. Starting one lives in the composer's session (gear) menu, offered while `canCompactNow` (`onCompact && !isStreaming && !isCompacting`); a running compaction gets its own row control guarded only by `onCompact && isCompacting`, because an auto-compaction mid-run must stay visible and abortable, which is exactly when `isStreaming && isCompacting`.
 
 ### 0.86 event surface — the wire forwards everything, the client switch must keep up
 `agent-event-wire.ts` whitelists by omission (only `turn_start/turn_end` dropped), so any new SDK event reaches the browser and is silently ignored unless `handleAgentEvent` has a case. Currently handled beyond the message lifecycle: `bash_execution_update` (live `!command` output, tail-capped by `PENDING_BASH_OUTPUT_CAP`), `thinking_level_changed` (immediate selector sync), `session_info_changed` (server invalidates the list cache), `entry_appended` (throttled idle-only transcript refresh — the SDK fires it for extension custom entries and cache warming, never for normal streaming). `executeBash` must `ensureEventsConnected(sid)` *before* dispatching the bash command, or the chunks have no stream to arrive on.
@@ -255,6 +283,9 @@ pi ≥ 0.86 `isIdle` stays false through auto-retry backoff, branch summaries, a
 
 ### Composer send path is single-shot and guarded
 `ChatInput.handleSend` routes slash commands through `runBuiltinCommand` (the pending-guard wrapper) and sends exactly one `onSend` with the `#session`-mention-resolved text. A merge once left a second raw `onSend(msg, …)` behind it: the first send flips `agentRunningRef`, the second hits the running guard and *restores the just-sent text back into the composer* — every message appeared to "stick". `components/ChatInput.test.mjs` runs the extracted handler in a VM to pin one-send semantics.
+
+### Composer card and control row
+`ChatInput` draws the input card with `data-state` (`bash` / `steer`) so `app/native-theme.css` can tint its hairline — the editor-level border that used to carry those states is zeroed by the card rules, so a state painted there never shows. Attach is the card's leading "+" (`.composer-attach-button`); Send is a round icon whose quiet/filled fill is the ready signal (`.composer-send-button`, while the compact quote composer keeps a labelled `native-primary-button`); the `/` `@` `#` triggers are a faint hint beside Send (`.composer-trigger-hint`) rather than placeholder text. The row below holds session context only: reasoning and the tool preset share one chip and one menu (`.composer-run-menu`, reasoning still changeable mid-run), manual compaction starts from the gear menu (see the compaction note), and the completion-sound switch lives in Settings › General. Toolbar icons are 14px; the phone composer uses a 1.5 line box so 16px text fits the 24px row.
 
 ### `!command` output renders live, then collapses
 The pending bash bubble accumulates `bash_execution_update` deltas into `pendingBash.output` and renders them through `BashExecutionView` as a synthesized partial result, default-expanded while running (`ToolCallBlock defaultExpanded`). When the run finishes the persisted message mounts collapsed like any other tool call — live-watched, then folded, is intentional.
@@ -305,6 +336,12 @@ Switching chats does **not** remount `ChatWindow` — `AppShell.handleSelectSess
 - Skill toggling edits only the `disable-model-invocation` frontmatter key on the target `SKILL.md`; keep that surgical so user formatting survives.
 - `/api/skills/install` shells through `npx skills add ... --agent pi`; project installs run with the selected cwd.
 
+### Workspace manager Pi package (`pi-workspace-manager/`)
+- Standalone Pi package (`pi-workspace-manager/package.json` + `extensions/workspace-manager.ts`) that is **not** part of the Next app; it gives the agent a checkpoint/merge/revert workflow over git worktrees. Install with `pi install ./pi-workspace-manager` or through the Plugins panel.
+- Tools: `workspace_status`, `workspace_create`, `workspace_sync`, `workspace_checkpoint`, `workspace_diff`, `workspace_merge`, `workspace_revert`, `workspace_rollback`, `workspace_list`, `workspace_prune` (plus a `/workspace` command). `workspace_merge` creates a tracked-only pre-merge checkpoint (`git stash create` → `refs/pi/checkpoints/<ws>/<n>`), commits the worktree, syncs the base into the worktree, then merges with `--no-ff`; `workspace_revert` is the only base rollback and uses `git revert -m 1` (never `reset`); `workspace_rollback` restores worktree tracked files with `git read-tree --reset -u` (or `git reset --hard` with `hard:true`).
+- Refs: `refs/pi/workspaces/<ws>/base` (symbolic ref to the base branch), `refs/pi/checkpoints/<ws>/<n>` and `refs/pi/merges/<ws>/<n>/{base,source,head,revert}`; `<ws>` is a hash of the shared git dir plus the worktree branch. No retention cap (`workspace_prune` removes refs, optionally `git gc`).
+- Every git call goes through `pi.exec("git", argv)` (no shell). Sensitive-looking paths (`.env`, `*.pem`, `id_rsa*`, …) are refused unless `allowSensitive`. Its test (`pi-workspace-manager/test/workspace-manager.test.mjs`) drives a real temporary repo/worktree and is included in `npm test`'s glob list.
+
 ### Built-in subagents
 - The global `builtInEnabled` switch is persisted in `~/.pi/agent/agents/settings.json` and defaults to `false` when the file or field is absent. Malformed settings fail closed; atomic updates preserve unknown fields.
 - The inline built-in extension factory is always present so reloading an existing wrapper can apply setting changes, but it registers no tools while disabled. After changing the switch, the user must explicitly reload the current session.
@@ -334,8 +371,14 @@ The pi CLI's `AgentSessionRuntime` replaces its single session in place; Pi Web 
 - The model test route is `app/api/models-config/test/route.ts`; `app/api/models/test/` is not a real route.
 
 ### Completion sound
-- `hooks/useAudio.ts` stores the toggle in `localStorage` as `pi-sound-enabled` and reuses one `AudioContext`.
+- `hooks/useAudio.ts` stores the toggle in `localStorage` as `pi-sound-enabled` and reuses one `AudioContext`. The switch is in Settings › General (`settings.completionSound`), not the composer row.
 - Browser autoplay policy means sound must be unlocked from a user gesture; `ChatInput` calls the unlock hook from interactive controls, and `ChatWindow` plays the tone from `onAgentEnd`.
+
+### Window background image
+- `lib/app-background.ts` owns the store: a bounded JPEG data URL in `localStorage` (`pi-background-image`) plus `{ enabled, dim, blur, fit }` (`pi-background-image-options`). It lives in `localStorage`, not an agent-dir file, so the browser and desktop builds behave the same.
+- Picked images are re-encoded on a canvas (`prepareBackgroundImageDataUrl`) before storage; desktop goes through the native dialog + `/api/desktop/read-images`, the web through a file input.
+- `applyAppBackgroundToDom` toggles `has-app-background` and the `--app-bg-*` variables on the root element; the boot script in `lib/theme.ts` applies the same state before first paint. All CSS is the background block at the end of `native-theme.css`, which dims with white on light and black on dark themes and makes the shell/topbar/chat/right panel transparent.
+- `hooks/useAppBackground.ts` is the React subscription; `AppShell` mounts it for side effects and Settings › General › Appearance renders the controls. Keep the settings thumbnail an `<img>` — `components/SettingsPanel.test.mjs` forbids `style={{` in that file.
 
 ### Exported session HTML
 - `/api/sessions/[id]/export` delegates to pi's export helper, then patches recursive tree helpers in the generated HTML to iterative versions so very deep linear sessions do not overflow the browser call stack.
@@ -351,7 +394,8 @@ The pi CLI's `AgentSessionRuntime` replaces its single session in place; Pi Web 
 - `useDesktopConnection` polls `/api/home` only in Tauri to drive the offline banner. Its cleanup must stop in-flight probes from rescheduling, otherwise an unmount leaves a timer nobody owns and it pings forever.
 
 ### Settings dialog: one tab per concern
-- The settings dialog's tabs are exactly `general`, `models`, `skills`, `agents`, `plugins` (`SETTINGS_SECTION_VALUES`). The former `desktop` tab duplicated General's language and theme pickers, so it was removed: the product blurb and Version & Updates sit at the top of General, the custom-stylesheet and diff-display controls joined General's appearance/chat sections, and the desktop window/tray switches live in `components/desktop/DesktopAppSection.tsx`, which renders nothing in a browser (same self-hiding contract as `WindowControls`). `components/AppUpdatesSection.tsx` owns the update check and its chips.
+- The settings dialog's tabs are exactly `general`, `models`, `skills`, `agents`, `plugins` (`SETTINGS_SECTION_VALUES`). The former `desktop` tab duplicated General's language and theme pickers, so it was removed: the product blurb and Version & Updates sit at the top of General, the custom-stylesheet and diff-display controls joined General's appearance/chat sections, the Chat section also hosts the fork's localized-output switch (a managed block in the global `APPEND_SYSTEM.md`, `GET`/`PUT /api/localized-output`), and the desktop window/tray switches live in `components/desktop/DesktopAppSection.tsx`, which renders nothing in a browser (same self-hiding contract as `WindowControls`). `components/AppUpdatesSection.tsx` owns the update check: a current/latest version card (no repository chip) that lives at the top of General's first column, followed by the language and appearance groups.
+- The dialog follows the host OS through `<html data-platform>` (`lib/ui-platform.ts`, set in a layout effect when the dialog mounts, in the browser too): macOS gets a centered preferences toolbar, Windows/Linux a left navigation pane with the content as a card. All of that CSS is the per-platform block at the end of `app/native-theme.css`; with no attribute (phones, tablets, unknown platforms) only the shared rules apply. ⌘, / Ctrl+, opens the dialog at the last section (`handleOpenSettingsShortcut`, wired in `AppShell`); the macOS menu bar binds the same key in `src-tauri/src/shell/macos_menu.rs`.
 - A signed desktop update installs and relaunches the app, so `AppUpdatesSection` reports `busy` up to `SettingsPanel`, which keeps backdrop clicks and Escape from dismissing the dialog mid-upgrade. That is the reason for the `onBusyChange` prop; don't drop it when refactoring the panel.
 - `UpdateReminder` opens the panel at `general`, where the update status now lives. `components/fork-extractions.test.mjs` pins that the update/desktop code stays in those fork-owned files instead of being regrouped into `SettingsPanel.tsx`.
 
@@ -372,7 +416,7 @@ Upstream segment D (0e36743) restructured `AppShell.tsx`'s main region in ways t
 
 1. The "Center: chat" column must contain BOTH the topbar's chat content AND the chat wrapper. A merge variant closed the column right after the topbar, making the chat wrapper a second `flex: 1` row child — the viewport split 50/50 between an empty topbar-only column and the chat ("huge blank middle column, chat clipped at the right edge").
 2. The right-panel toggle/backdrop/resizer/panel block must be inside the row, not after its close: as flex-**column** children of `.app-shell` the closed panel's content height still stole vertical space (`height: 432px` at `width: 0`), floating the composer.
-3. Since 2026-09-24 the topbar sits inside a main column that follows the sidebar as a child of the outer row: `.app-shell` (column) → offline banner → outer row → [backdrop, sidebar (full height), sidebar handle, main column → [topbar, inner row → [center chat, panel block]]]. The sidebar runs the full window height (its header hosts the macOS traffic lights via `session-sidebar-header--mac-inset`), and the topbar starts at the center column but still reaches the window's right edge, keeping `WindowControls` top-right. There is deliberately no `paddingLeft: sidebarResizer.width` on the topbar anymore — that was the old full-width-topbar hack that left a blank strip above the sidebar; re-adding it on a merge regresses the layout. `app-topbar--mac-inset` (72px) is only for the sidebar-closed/mobile case where the traffic lights land on the topbar itself.
+3. Since 2026-09-24 the topbar sits inside a main column that follows the sidebar as a child of the outer row: `.app-shell` (column) → offline banner → outer row → [backdrop, sidebar (full height), sidebar handle, main column (`.app-main-column`) → [topbar, inner row → [center chat]], panel block]. The sidebar runs the full window height (its header hosts the macOS traffic lights via `session-sidebar-header--mac-inset`), and the topbar spans only the center column — the file panel is a full-height sibling of the main column (since 2026-10-14), so the topbar must not reach over it. `WindowControls` render in the topbar while the panel is closed and in the panel's own header row (`right-panel-tab-strip`, a window drag region) while it is open, keeping them at the window's top-right corner. The panel is one embedded workbench surface with the chat (`--workbench-bg`, `.app-main-column` re-points `--bg` at it): hairline dividers, no floating-card chrome, the file tree as its left column (`order: -2`; the tree resizer grows rightward on a width budget) and a × close in the header. The compact 641–959px overlay is a plain edge-anchored drawer. The file list starts hidden (the panel is a preview surface), so an empty panel offers "Show file list"; `` closes the panel and returns focus to the composer, but only while it is open (a closed panel leaves the key and focus alone). There is deliberately no `paddingLeft: sidebarResizer.width` on the topbar anymore — that was the old full-width-topbar hack that left a blank strip above the sidebar; re-adding it on a merge regresses the layout. `app-topbar--mac-inset` (72px) is only for the sidebar-closed/mobile case where the traffic lights land on the topbar itself.
 
 The topbar renders exactly ONE toolbar group (`app-topbar-actions`: history/branches/more), pushed to the right edge by `margin-left: auto` — right-aligned since 2026-09-24 (a user request; an earlier experiment had it left of the title via `order: -1`, removed). The inline session-stats button (`renderSessionStatsButton`, ↑in ↓out ↻cache $cost) was removed the same day — session info opens from the More menu entry instead; `sessionStats`/`contextUsage` state stays (auto-name guards + More-menu labels). Segment D also left a second desktop group (`renderChatToolbarActions(false)` — history/generate-title/system/tools) next to it; the duplicate is removed, its unique entries (Sub-agents, Tools) live in the More menu via `handleSystemInfoToggle` (keeping the lazy dormant-session start), and its generate-title guards (persisted-stats counting + `selectedSession.transient` check) were merged into the group-A button — pinned by `AppShell.auto-name.test.mjs`. JSX indentation in AppShell.tsx is unreliable; verify structure with the TS AST or the DOM, not by counting whitespace. `fileContentBlock()` in `AppShell.file-viewer-state.test.mjs` slices source by the panel's closing-div sequence — keep in sync.
 

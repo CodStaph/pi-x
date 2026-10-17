@@ -25,6 +25,28 @@ mounted behind inactive tabs, hidden panels, and session or project switches.
 - Explicit termination and expiry signal the shell, escalating to SIGKILL after
   two seconds if it ignores SIGHUP. Server shutdown force-kills shells immediately.
 
+## Shell profiles
+
+Each tab stores a shell profile id (`auto`, `cmd`, `powershell`, `pwsh`,
+`git-bash`, `wsl`, or the POSIX `system`). The terminal panel header picks the
+shell for that tab; changing it restarts the tab, and the star keeps it as the
+default for new terminals (`pi-terminal-shell`, `lib/app-prefs.ts`).
+`GET /api/terminal/shells` reports what this machine has; `POST /api/terminal`'s
+`shell` field is resolved by `lib/terminal-shells-runtime.ts` into the pty spawn.
+
+- `auto` is a strategy, not a binary: on Windows it resolves WSL first, then Git
+  Bash, then cmd, so a machine with WSL installed gets a Linux shell without
+  further configuration. POSIX always uses `$SHELL -l` regardless of the id.
+- Git Bash is found by walking up from `git.exe`/`bash.exe` to its install root
+  (the directory holding `cmd\git.exe` or `bin\git.exe`), which covers the
+  `cmd\`, `mingw64\bin\` and `usr\bin\` layouts; the standard install folders
+  are the fallback. A bare `bash.exe` on PATH is only accepted when that tree
+  proves it belongs to Git (System32's retired WSL `bash.exe` must not win).
+- WSL is launched as `wsl.exe --cd /mnt/<drive>/...` (`toWslPath()`), so the tab
+  opens in the mapped directory; UNC or relative paths fall back to WSL's home.
+- A restored tab whose shell is no longer available falls back to the first
+  profile the machine reports, never a dead option.
+
 ## Transport
 
 Output events carry a monotonically increasing UTF-16 offset in SSE `id`.

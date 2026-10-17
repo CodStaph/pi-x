@@ -11,14 +11,17 @@
 - 从历史消息继续分支，或将会话 Fork 为独立会话。
 - 管理模型、OAuth/API Key、自定义模型配置、Skills 和 Plugins。
 - 在侧边栏切换 Git worktree，并浏览项目文件。
-- 预览源码、Diff、Markdown、图片、音频、PDF 和 DOCX 等文件。
+- 预览源码、Diff、Markdown、图片、音频、PDF 和 DOCX 等文件，文本文件可进行编辑。
+- 右侧边栏，文件浏览区与终端窗口区，从左右并列调整为上下分列。
+- 开放浏览器窗口，与终端区窗口同处分屏区下部。
+- 终端窗口调整：按照 WSL → Git Bash → cmd 顺序降级，默认取第一个可用项。
 - 支持深色模式、会话自动命名、完成提示音和运行状态恢复。
 - 每周检查三个组成项目的稳定 GitHub Release，并在发现更新时提醒用户。
 - 通过一个升级按钮安装完整、签名的 Pi Agent 新版本并自动重启。
 
-![Pi Agent 浅色模式界面](./docs/screenshots/pi-agent-light@2x.png)
+![Pi Agent 浅色模式界面](./docs/screenshots/pi-agent-light.webp)
 
-![Pi Agent 深色模式界面](./docs/screenshots/pi-agent-dark@2x.png)
+![Pi Agent 深色模式界面](./docs/screenshots/pi-agent-dark.webp)
 
 **[⬇️ 下载 Pi Agent（macOS / Windows）](https://github.com/abcwyc/pi-agent-desktop/releases)**
 
@@ -37,6 +40,14 @@
 正式 Release 支持运行 macOS 11 或更高版本的 Apple Silicon Mac、Windows 10/11 x64，以及使用 WebKitGTK 4.1 和 GTK 3 的 Linux x64 发行版。桌面包内包含运行 Pi Agent 所需的 Next.js 服务、Node.js runtime 和当前版本的 Pi SDK，打开 App 时会自动启动本地服务，不需要用户另开终端、安装 Node.js 或单独启动 Web Server。
 
 > 安装 Pi Agent 后，可以直接使用 App 中的 Pi Agent 功能；但它不会在系统全局安装 `pi` 命令。如果还需要在终端中使用 Pi CLI，请按照 [pi 项目](https://github.com/earendil-works/pi) 的说明单独安装。
+
+> **macOS 首次打开被拦截**：macOS 版本目前没有 Apple Developer ID 签名和公证，首次打开时
+> Gatekeeper 可能提示「无法验证开发者」或「已损坏，无法打开」（通过 Homebrew 安装也一样）。
+> 可以在「系统设置 › 隐私与安全性」中点「仍要打开」，或在终端执行：
+>
+> ```bash
+> xattr -dr com.apple.quarantine "/Applications/Pi Agent.app"
+> ```
 
 首次启用签名自动升级前，旧的无 updater 版本需要手动安装一次新的签名 App。此后即可在设置中完成升级。
 
