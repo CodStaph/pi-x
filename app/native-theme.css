@@ -435,16 +435,32 @@
 }
 .file-tree-resize-handle {
   z-index: 3;
+  /* The tree stacks above the viewer/terminal, so the handle is a horizontal
+     bar straddling the shared edge instead of a vertical one. */
+  width: auto;
+  height: 12px;
+  margin: -6px 0;
+  flex: 0 0 12px;
+  cursor: row-resize;
+}
+.file-tree-resize-handle::after {
+  top: 5px;
+  bottom: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 1px;
 }
 .file-tree-panel {
-  width: var(--file-tree-width, 300px);
-  min-width: var(--file-tree-width, 300px);
+  width: 100%;
+  min-width: 0;
+  height: var(--file-tree-width, 300px);
+  min-height: var(--file-tree-width, 300px);
   flex: 0 0 var(--file-tree-width, 300px);
   display: flex;
   flex-direction: column;
-  min-height: 0;
   overflow: hidden;
-  border-left: var(--hairline) solid var(--border);
+  border-bottom: var(--hairline) solid var(--border);
 }
 
 /* Column resize handles between the three panes (desktop only).
@@ -7344,8 +7360,7 @@ html.native-desktop :is(
    dividers carrying hierarchy. */
 .right-panel-body > .file-tree-panel {
   order: -2;
-  border-left: none;
-  border-right: var(--hairline) solid var(--separator);
+  border-bottom: var(--hairline) solid var(--separator);
 }
 .right-panel-body > .file-tree-resize-handle {
   order: -1;

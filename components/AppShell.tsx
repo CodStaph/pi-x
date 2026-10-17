@@ -118,7 +118,6 @@ const FILE_TREE_PREVIEW_MIN_WIDTH = 240;
 // Below this panel width the tree steps aside while a file or terminal is
 // shown: the viewer's toolbar (path, mode switch, actions) needs ~320px, and a
 // 220px tree beside it left the preview clipped.
-const FILE_TREE_AUTO_COLLAPSE_WIDTH = FILE_TREE_MIN_WIDTH + 320;
 /** Panel tab id for the embedded browser (a normal right-panel page view). */
 const BROWSER_TAB_ID = "browser";
 
@@ -185,22 +184,6 @@ export function AppShell() {
   const fileExplorerRef = useRef<FileExplorerHandle>(null);
   // The panel is a preview surface; keep the file index hidden until asked for.
   const [fileTreeOpen, setFileTreeOpen] = useState(false);
-  // Measured width of the panel body; drives the narrow-panel auto-collapse.
-  const [panelBodyWidth, setPanelBodyWidth] = useState(0);
-  const panelBodyObserverRef = useRef<ResizeObserver | null>(null);
-  const panelBodyRef = useCallback((node: HTMLDivElement | null) => {
-    panelBodyObserverRef.current?.disconnect();
-    panelBodyObserverRef.current = null;
-    if (!node || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(([entry]) => {
-      setPanelBodyWidth(Math.round(entry.contentRect.width));
-    });
-    observer.observe(node);
-    panelBodyObserverRef.current = observer;
-  }, []);
-  // The user reopened the tree while the panel is narrow; cleared whenever the
-  // panel crosses the threshold, so widening and narrowing again re-collapses.
-  const [fileTreeNarrowOverride, setFileTreeNarrowOverride] = useState(false);
   const [fileExplorerQuery, setFileExplorerQuery] = useState("");
   const [changesCount, setChangesCount] = useState(0);
   const [changesCollapsed, setChangesCollapsed] = useState(true);
@@ -366,23 +349,19 @@ export function AppShell() {
     storageKey: "pi-right-panel-width",
     widthRef: rightPanelWidthRef,
   });
-  // The file tree is a column beside the viewer/terminal, so its extent is a
-  // width budget: keep the pane beside it at least FILE_TREE_PREVIEW_MIN_WIDTH
-  // wide. On the compact overlay the panel width is whatever the drawer gets.
+  // The file tree stacks above the viewer/terminal, so its extent is a height
+  // budget: keep the pane below it at least FILE_TREE_PREVIEW_MIN_WIDTH tall.
+  // (The constant names predate the vertical split.)
   const getFileTreeMaxWidth = useCallback(
     () => {
-      const availablePanelWidth = typeof window === "undefined"
-        ? rightPanelWidthRef.current
-        : window.innerWidth < MOBILE_MAX_WIDTH
-          ? window.innerWidth
-          : window.innerWidth < SPLIT_PANEL_MIN_WIDTH
-            ? Math.min(560, window.innerWidth - 48)
-            : rightPanelWidthRef.current;
+      const availablePanelHeight = typeof window === "undefined"
+        ? FILE_TREE_MAX_WIDTH
+        : window.innerHeight;
       return Math.max(
         FILE_TREE_MIN_WIDTH,
         Math.min(
           FILE_TREE_MAX_WIDTH,
-          availablePanelWidth - FILE_TREE_PREVIEW_MIN_WIDTH,
+          availablePanelHeight - FILE_TREE_PREVIEW_MIN_WIDTH,
         ),
       );
     },
@@ -390,11 +369,13 @@ export function AppShell() {
   );
   const fileTreeResizer = useResizablePanel({
     ariaLabel: translate("layout.resizeFileTree"),
+    axis: "vertical",
     cssVariable: "--file-tree-width",
     defaultWidth: FILE_TREE_DEFAULT_WIDTH,
     getMaxWidth: getFileTreeMaxWidth,
-    // The tree sits at the panel's left edge (CSS order), so it grows rightward.
-    growthDirection: "right",
+    // The tree is the top pane and grows downward, so pulling the divider down
+    // makes it taller (and the terminal/viewer below it shorter).
+    growthDirection: "down",
     maxWidth: FILE_TREE_MAX_WIDTH,
     minWidth: FILE_TREE_MIN_WIDTH,
     storageKey: "pi-file-tree-width",
@@ -1775,27 +1756,7 @@ export function AppShell() {
   }, [projectTrustCwd]);
 
   const activeFileTab = fileTabs.find((tab) => tab.id === activeFileTabId) ?? null;
-  // A narrow panel collapses the tree only while something is being viewed;
-  // with nothing open the tree is the panel's whole content. The preference
-  // (fileTreeOpen) is untouched, so a wider panel brings the tree back.
-  const fileTreeNarrow = panelBodyWidth > 0 && panelBodyWidth < FILE_TREE_AUTO_COLLAPSE_WIDTH;
-  const [fileTreeNarrowSeen, setFileTreeNarrowSeen] = useState(fileTreeNarrow);
-  if (fileTreeNarrowSeen !== fileTreeNarrow) {
-    setFileTreeNarrowSeen(fileTreeNarrow);
-    setFileTreeNarrowOverride(false);
-  }
-  const panelHasViewer = Boolean(activeFileTabId && panelTabs.some((tab) => tab.id === activeFileTabId));
-  const fileTreeAutoCollapsed = fileTreeNarrow && panelHasViewer && !fileTreeNarrowOverride;
-  const fileTreeShown = fileTreeOpen && !fileTreeAutoCollapsed;
-  const handleFileTreeToggle = () => {
-    if (fileTreeShown) {
-      setFileTreeOpen(false);
-      setFileTreeNarrowOverride(false);
-    } else {
-      setFileTreeOpen(true);
-      if (fileTreeAutoCollapsed) setFileTreeNarrowOverride(true);
-    }
-  };
+  const handleFileTreeToggle = () => setFileTreeOpen((open) => !open);
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
   const windowTitle = activeCwdName ? `${activeCwdName} - ${PRODUCT_NAME}` : PRODUCT_NAME;
   const topBarTitle = scheduledOpen
@@ -2966,11 +2927,11 @@ export function AppShell() {
           {activeCwd && (
             <button
               type="button"
-              className={`file-workbench-icon-button file-tree-toggle${fileTreeShown ? " is-active" : ""}`}
+              className={`file-workbench-icon-button file-tree-toggle${fileTreeOpen ? " is-active" : ""}`}
               onClick={handleFileTreeToggle}
-              title={translate(fileTreeShown ? "contextPanel.hideFileList" : "contextPanel.showFileList")}
-              aria-label={translate(fileTreeShown ? "contextPanel.hideFileList" : "contextPanel.showFileList")}
-              aria-pressed={fileTreeShown}
+              title={translate(fileTreeOpen ? "contextPanel.hideFileList" : "contextPanel.showFileList")}
+              aria-label={translate(fileTreeOpen ? "contextPanel.hideFileList" : "contextPanel.showFileList")}
+              aria-pressed={fileTreeOpen}
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M15 7v10" />
@@ -3011,8 +2972,8 @@ export function AppShell() {
         </div>
 
         {/* Only the active viewer is mounted. Lightweight per-tab state is restored on activation. */}
-        <div ref={panelBodyRef} className="right-panel-body" style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden", paddingBottom: "env(safe-area-inset-bottom)" }}>
-        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div className="right-panel-body" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden", paddingBottom: "env(safe-area-inset-bottom)" }}>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {activeArtifactTab ? (
             <ArtifactPanel
               key={activeArtifactTab.id}
@@ -3049,7 +3010,7 @@ export function AppShell() {
             <div className="right-panel-empty">
               <span>{translate("files.noneOpen")}</span>
               {/* The file list starts hidden; offer it where the panel is empty. */}
-              {activeCwd && !fileTreeShown && (
+              {activeCwd && !fileTreeOpen && (
                 <button type="button" className="right-panel-empty-action" onClick={handleFileTreeToggle}>
                   {translate("contextPanel.showFileList")}
                 </button>
@@ -3082,7 +3043,7 @@ export function AppShell() {
         </div>
       
         {/* Explorer column — always-on project file tree */}
-          {activeCwd && fileTreeShown && (
+          {activeCwd && fileTreeOpen && (
             <>
               <div
                 {...fileTreeResizer.separatorProps}
