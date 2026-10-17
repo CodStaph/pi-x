@@ -103,55 +103,57 @@ jobs:
           tagName: v__VERSION__
           releaseName: pi-agent-desktop v__VERSION__
           releaseBody: |
-            ## Pi Agent Desktop 0.6.6
+            ## Pi Agent Desktop 0.7.2
 
-            Quality-of-life and diagnosability release.
+            Brings the desktop app up to the 0.7.2 feature set of the upstream project, keeping this fork's own layers (project-tree sidebar, full-height layout, desktop translations, settings sections).
 
             ### Added
 
-            - The window remembers its size and position across launches.
-            - Timestamped log files, a panic hook and a server monitor, with an **Open logs** button to reach them from Settings.
-            - **Settings → General** gains a **Clear cache** button.
+            - **Artifacts and inline previews**: complete HTML/SVG/React fences render in a sandboxed frame (Source / full screen / download), `:::artifact` blocks become message cards and side-panel tabs with versions per identifier, and React components compile against a bundled runtime — so a component that only uses React works offline.
+            - **Scheduled tasks**: a Scheduled page with cron schedules, a read-only default, run history and completion notifications.
+            - **Conversation sidebar**: relative times, hover actions in a fixed trailing slot, collapsed project counts, and a mobile drawer that remembers the desktop state.
+            - **Model switches by scope**: enable models per provider or model, refresh provider catalogs on demand, and see classifier/image models separately; costs can be shown in CNY with a live exchange rate.
+            - **Desktop**: autostart switch, timestamped log files with an "Open logs" button, a "Clear cache" action, Finder "Open With", window size/position restore, and macOS vibrancy.
+
+            ### Changed
+
+            - The settings dialog follows the host platform (macOS preferences toolbar, Windows/Linux left navigation) and ⌘, / Ctrl+, opens it at the last section.
+            - The composer is one card: round Send whose fill is the ready signal, attach as a leading "+", bash/steer tints on the card itself, and one menu for reasoning and tools. Manual compaction moved into the session menu.
+            - The file panel is a full-height workbench beside the chat, with the file tree as its left column, the window controls in its header while open, and `\` to close it.
 
             ### Fixed
 
-            - The composer input is focused automatically when a new session opens.
-            - The Plugins panel showed raw message keys (like `i18n.packageInstalled`) after installing, updating, enabling or removing a package, after reloading the session, and in its empty state. All six missing translations now exist in every language.
-            - Smoother rendering for image-heavy chats: image data URLs are built once per block and result images are keyed by index.
-            - The Homebrew cask uses the supported `depends_on :macos` form.
-
-            ### Good to know
-
-            - .docx previews now declare their rendering dependency (mammoth) correctly, so production installs that skip dev dependencies keep working.
-            - A static gate now verifies every translation call site — a missing key or a missing placeholder can no longer reach the UI unnoticed.
+            - The app no longer loses the panel state or the composer focus when the window is resized across breakpoints.
+            - A test file left out of `npm test` now fails the suite, so a new test directory cannot go unnoticed.
 
             Bundled components: pi 1.3.0, pi-web 0.10.0.
 
             ---
 
-            ## Pi Agent Desktop 0.6.6
+            ## Pi Agent Desktop 0.7.2
 
-            体验与可诊断性版本。
+            把桌面端对齐到上游 0.7.2 的功能集，同时保留本分支自己的层次（项目树侧栏、整高布局、桌面端三语翻译、分区设置）。
 
             ### 新增
 
-            - 窗口会记住上次的大小和位置。
-            - 日志文件带时间戳,新增崩溃钩子与服务器监控,可在设置中一键打开日志。
-            - **设置 → 常规**新增**清除缓存**按钮。
+            - **Artifacts 与内联预览**：完整的 HTML/SVG/React 围栏在沙箱中渲染（源码 / 全屏 / 下载），`:::artifact` 块变成消息卡片与侧栏页签，并按标识符记录版本；React 组件用随包附带的运行时编译，只依赖 React 的组件离线也能运行。
+            - **定时任务**：定时任务页支持 cron、默认只读、运行历史与完成通知。
+            - **会话侧栏**：相对时间、悬停操作固定在行尾槽位、折叠时显示项目会话数，手机抽屉会记住桌面端的展开状态。
+            - **按范围开关模型**：可按供应商或单个模型启用，按需刷新供应商目录，单独列出分类器/图像模型；费用可按实时汇率以人民币显示。
+            - **桌面端**：开机自启开关、带时间戳的日志与「打开日志」按钮、「清除缓存」、Finder「打开方式」、窗口大小与位置恢复，以及 macOS 毛玻璃效果。
+
+            ### 变更
+
+            - 设置窗口跟随宿主平台（macOS 偏好设置工具栏、Windows/Linux 左侧导航），⌘, / Ctrl+, 打开并回到上次的分区。
+            - 输入框合并为一张卡片：圆形发送按钮以填充表示可发送，附件为行首「+」，bash/steer 状态给卡片描边上色，推理与工具共用一个菜单；手动压缩移入会话菜单。
+            - 文件面板改为聊天旁的整高工作台：文件树在左侧，面板打开时窗口按钮移入其头部，`\` 关闭面板。
 
             ### 修复
 
-            - 新开会话时自动聚焦输入框。
-            - 插件面板在安装、更新、启用、移除插件,重载会话后以及空状态下会显示原始键名(如 `i18n.packageInstalled`)。六个缺失的翻译现已在所有语言中补齐。
-            - 图片较多的会话渲染更流畅:图片数据 URL 每块只构建一次,结果图片按索引关联。
-            - Homebrew cask 改用受支持的 `depends_on :macos` 写法。
+            - 跨断点缩放窗口后不再丢失面板状态或输入焦点。
+            - 被 `npm test` 漏掉的测试文件现在会让测试失败，新增测试目录不会再被静默忽略。
 
-            ### 需要了解
-
-            - .docx 预览的渲染依赖(mammoth)现在声明正确,不含开发依赖的生产安装不再受影响。
-            - 新增静态门禁校验所有翻译调用点,缺失键或缺失占位符不再可能悄悄进入界面。
-
-            内置组件版本:pi 1.3.0、pi-web 0.10.0。
+            随包组件：pi 1.3.0、pi-web 0.10.0。
           releaseDraft: true
           prerelease: false
           uploadUpdaterJson: true

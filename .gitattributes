@@ -1,0 +1,21 @@
+# One line ending for the source tree: LF in the repository and in every
+# checkout, on Windows too. Several tests match multi-line snippets in the
+# source, and `core.autocrlf=true` used to rewrite the working copy to CRLF,
+# which broke them (`AppShell.right-panel-row.test.mjs` had a local workaround).
+# Binary assets keep their bytes untouched.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.pdf binary
+*.dmg binary
+*.exe binary
+*.zip binary

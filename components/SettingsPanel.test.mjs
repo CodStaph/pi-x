@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const panelSource = await readFile(new URL("./SettingsPanel.tsx", import.meta.url), "utf8");
-const cssSource = await readFile(new URL("../app/settings.css", import.meta.url), "utf8");
+const panelSource = (await readFile(new URL("./SettingsPanel.tsx", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+const cssSource = (await readFile(new URL("../app/settings.css", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 const globalCssSource = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 const shellSource = await readFile(new URL("./AppShell.tsx", import.meta.url), "utf8");
 const sidebarSource = await readFile(new URL("./SessionSidebar.tsx", import.meta.url), "utf8");
