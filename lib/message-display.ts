@@ -4,8 +4,16 @@ interface DisplayOptions {
   isStreaming?: boolean;
 }
 
+/**
+ * One line of reasoning for the collapsed thinking card. Every whitespace run
+ * collapses to a single space, so the preview shows the start of the reasoning
+ * even when the model puts a very short first line there (a lone
+ * "The user wants:" used to make the card look empty). Bounded by code points,
+ * so an emoji is never cut in half.
+ */
 export function getThinkingPreview(thinking: string): string {
-  return thinking.trimStart().match(/^[^\r\n]{0,240}/u)?.[0].trimEnd() ?? "";
+  const collapsed = thinking.replace(/\s+/gu, " ").trim();
+  return Array.from(collapsed).slice(0, 240).join("").trimEnd();
 }
 
 export function isMessageGroupAnchor(message: { role?: AgentMessage["role"]; customType?: string }): boolean {

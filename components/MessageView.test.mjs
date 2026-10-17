@@ -46,7 +46,7 @@ test("matches response model aliases and otherwise includes the provider", () =>
   assert.equal(getModelDisplayName("gateway", "unknown-model", names), "gateway/unknown-model");
 });
 
-test("previews the first thinking line and reveals the full text with the saved default", () => {
+test("previews the flattened reasoning line and reveals the full text with the saved default", () => {
   const previousWindow = globalThis.window;
   try {
     for (const expanded of [false, true]) {
@@ -62,7 +62,9 @@ test("previews the first thinking line and reveals the full text with the saved 
       ));
       assert.match(html, new RegExp(`aria-expanded="${expanded}"`));
       assert.equal((html.match(/>[^<]*Independent reasoning[^<]*</g) ?? []).length, 1);
-      assert.equal(html.includes("Detailed second line."), expanded);
+      // The collapsed card shows the flattened start of the reasoning, so the
+      // model's short first line no longer leaves it looking empty.
+      assert.ok(html.includes("Detailed second line."));
       assert.match(html, /aria-label="Thinking: /);
       assert.match(html, /3s/);
     }
