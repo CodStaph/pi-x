@@ -13,6 +13,9 @@ export const filePanelFixture = `<!doctype html><html><head><link rel="styleshee
 export const filePanelStylesheet = "#notes { outline: 3px solid rgb(1, 2, 3); }";
 
 export async function checkFilePanel(page, filePath) {
+  // The tree joins parents with "/" (lib/file-paths.ts joinFilePath), so a
+  // Windows path has to be normalized before it is used as a title selector.
+  const title = filePath.replace(/\\/g, "/");
   const hideSidebar = page.getByRole("button", { name: "Hide sidebar", exact: true });
   if (await page.locator("#session-sidebar").evaluate((element) => element.classList.contains("sidebar-open"))) {
     await hideSidebar.click();
@@ -30,7 +33,10 @@ export async function checkFilePanel(page, filePath) {
   const hidePanelInStrip = page.locator('#file-panel [aria-label="Hide file panel"]');
   await showPanel.click();
   await panel.waitFor({ state: "visible" });
-  await panel.locator(`[role="button"][title="${filePath}"]`).click();
+  // The panel opens as a preview surface; the file list starts hidden.
+  const showFileList = panel.locator('.file-tree-toggle[aria-label="Show file list"]');
+  if (await showFileList.isVisible()) await showFileList.click();
+  await panel.locator(`[role="button"][title="${title}"]`).click();
   const iframe = panel.locator("iframe");
   await iframe.waitFor();
   const frame = await (await iframe.elementHandle()).contentFrame();

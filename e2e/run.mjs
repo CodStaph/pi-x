@@ -10,9 +10,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { checkFilePanel, filePanelFixture, filePanelStylesheet } from "./file-panel.mjs";
+import { checkBrowserCard } from "./browser-card.mjs";
 import { checkExtensionDialogs, extensionSource } from "./extension-dialog.mjs";
 import { checkChatAppearance } from "./chat-appearance.mjs";
+import { checkSidebarBreakpoint } from "./sidebar-breakpoint.mjs";
 import { checkMcpManager } from "./mcp-manager.mjs";
+import { checkMissingWorkspace, MISSING_WORKSPACE, missingWorkspaceReply } from "./missing-workspace.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const mode = process.env.E2E_SERVER_MODE || "dev";
@@ -28,6 +31,9 @@ const previewFile = join(project, "preview.html");
 writeFileSync(previewFile, filePanelFixture);
 writeFileSync(join(project, "preview.css"), filePanelStylesheet);
 mkdirSync(sessionDir, { recursive: true });
+// A second project folder so a session can outlive it (deleted outside the app).
+const missingProject = join(agentDir, "missing-project");
+mkdirSync(missingProject);
 const timestamp = "2026-08-23T00:00:00.000Z";
 const LONG = "e2e-long-session";
 const BRANCH = "e2e-branch-session";
@@ -41,8 +47,8 @@ function message(id, parentId, role, content) {
   return { type: "message", id, parentId, timestamp, message: { role, content } };
 }
 
-function writeSession(id, entries) {
-  const header = { type: "session", version: 3, id, timestamp, cwd: project };
+function writeSession(id, entries, cwd = project) {
+  const header = { type: "session", version: 3, id, timestamp, cwd };
   writeFileSync(join(sessionDir, `2026-08-23T00-00-00-000Z_${id}.jsonl`),
     [header, ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
 }
@@ -127,6 +133,10 @@ try {
     message("root", null, "user", "E2E wrapper root"),
     message("reply", "root", "assistant", "E2E wrapper reply"),
   ]);
+  writeSession(MISSING_WORKSPACE, [
+    message("root", null, "user", "E2E missing workspace prompt"),
+    message("reply", "root", "assistant", missingWorkspaceReply),
+  ], missingProject);
 
   const probe = createServer();
   probe.listen(0, "127.0.0.1");
@@ -168,7 +178,7 @@ try {
     const response = await fetch(`${base}/api/sessions`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
     if (response?.ok) {
       const { sessions } = await response.json();
-      assert.deepEqual(sessions.map((session) => session.id).sort(), [LONG, BRANCH, RICH, COMPACTED, APPEND].sort());
+      assert.deepEqual(sessions.map((session) => session.id).sort(), [LONG, BRANCH, RICH, COMPACTED, APPEND, MISSING_WORKSPACE].sort());
       break;
     }
     assert.ok(Date.now() < deadline, "Server readiness timed out; see server.log");
@@ -296,7 +306,8 @@ try {
       const maximum = Number(await navigator.getAttribute("aria-valuemax"));
       const direction = before > 1 ? "ArrowUp" : "ArrowDown";
       await page.keyboard.press(direction);
-      const preview = page.getByRole("status");
+      // The preview card is a button since #130 (click jumps to the turn).
+      const preview = page.locator(".conversation-navigator-preview");
       await preview.waitFor();
       const after = Number(await navigator.getAttribute("aria-valuenow"));
       assert.equal(after, before + (direction === "ArrowUp" ? -1 : 1));
@@ -450,12 +461,14 @@ try {
     }
     await page.goto(`${base}/?session=${RICH}`, { waitUntil: "domcontentloaded" });
     await page.locator(".markdown-code-block pre").waitFor();
+    await checkBrowserCard(page, base, viewport.width);
     await checkFilePanel(page, previewFile);
     await checkExtensionDialogs(page, artifacts, viewport.width);
     if (viewport.width > 600) {
       await page.goto(`${base}/?session=${RICH}`, { waitUntil: "domcontentloaded" });
       await page.locator(".markdown-code-block pre").waitFor();
       await checkChatAppearance(page);
+      await checkSidebarBreakpoint(page);
       await checkMcpManager(page, { agentDir, cwd: project });
     }
     assert.deepEqual(errors, [], `Browser errors at width ${viewport.width}`);
@@ -465,6 +478,7 @@ try {
     context = undefined;
     page = undefined;
   }
+  await checkMissingWorkspace(browser, base, missingProject);
 } catch (error) {
   console.error(error);
   process.exitCode = 1;
