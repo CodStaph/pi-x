@@ -1,8 +1,8 @@
 cask "pi-agent" do
-  version "0.6.5"
+  version "0.7.2"
   # Filled in by .github/workflows/release.yml (scripts/update-homebrew-cask.mjs)
   # from the digest GitHub reports for the first published aarch64 DMG.
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "c668c86527f11474251d275859bf70122c545ee5104a543a95eb4a798d91c858"
 
   url "https://github.com/CodStaph/pi-x/releases/download/v#{version}/Pi.Agent_#{version}_aarch64.dmg"
   name "Pi Agent"
