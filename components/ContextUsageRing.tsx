@@ -1,4 +1,5 @@
 import { useI18n } from "@/hooks/useI18n";
+import { useCostCurrency } from "@/hooks/useCostCurrency";
 import type { ContextUsage, SessionStatsInfo } from "@/lib/pi-types";
 
 const RING_SIZE = 14;
@@ -33,6 +34,7 @@ interface ContextUsageRingProps {
  */
 export function ContextUsageRing({ contextUsage, sessionStats, onOpenStats }: ContextUsageRingProps) {
   const { t } = useI18n();
+  const { formatCost } = useCostCurrency();
 
   const hasUsage = contextUsage != null;
   const percent = contextUsage?.percent ?? null;
@@ -57,10 +59,14 @@ export function ContextUsageRing({ contextUsage, sessionStats, onOpenStats }: Co
       tooltipParts[0] += ` / ${fmtWindow(windowSize)}`;
     }
     if (sessionStats && sessionStats.cost > 0) {
-      tooltipParts.push(`$${sessionStats.cost.toFixed(3)}`);
+      tooltipParts.push(formatCost(sessionStats.cost, { minimumFractionDigits: 3, maximumFractionDigits: 3 }));
     }
   }
   const title = tooltipParts.length > 0 ? tooltipParts.join(" · ") : t("chat.ctxUsage");
+
+  // Nothing to report yet (new or dormant session): an empty grey ring read
+  // as a loading spinner, so leave the slot empty until usage arrives.
+  if (!hasUsage) return null;
 
   return (
     <button
@@ -74,7 +80,7 @@ export function ContextUsageRing({ contextUsage, sessionStats, onOpenStats }: Co
       }}
       style={{
         display: "flex", alignItems: "center", justifyContent: "center",
-        width: 28, height: 28, padding: 0, flexShrink: 0,
+        width: 32, height: 32, padding: 0, flexShrink: 0,
         background: "none", border: "none", borderRadius: 9,
         cursor: hasUsage ? "pointer" : "default",
         transition: "background 0.12s, opacity 0.12s",

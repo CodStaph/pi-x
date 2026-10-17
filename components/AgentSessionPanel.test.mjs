@@ -22,7 +22,7 @@ test("sorts running subagents first and enables search only for larger families"
 });
 
 test("renders as a compact left-positioned dropdown without a centered inner width", () => {
-  assert.match(source, /borderLeft: "1px solid var\(--border\)"/);
+  assert.match(source, /borderLeft: "var\(--hairline\) solid var\(--border\)"/);
   assert.match(source, /borderRadius: "0 0 6px 6px"/);
   assert.doesNotMatch(source, /maxWidth: 680/);
 });
@@ -39,7 +39,7 @@ test("running sub-agents expose steer and stop controls wired to the runtime rou
   const jiti = createJiti(import.meta.url, { jsx: { runtime: "automatic" }, tsconfigPaths: true });
   const React = await jiti.import("react");
   const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-  const { AgentSessionPanel } = await jiti.import("./AgentSessionPanel.tsx");
+  const { AgentSessionPanel } = await jiti.import("./AgentSessionPanel");
   const { I18nProvider } = await jiti.import("@/hooks/useI18n");
 
   const root = { id: "main", name: "main", firstMessage: "", modified: "2026-01-01T00:00:00Z" };

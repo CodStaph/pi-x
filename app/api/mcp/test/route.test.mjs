@@ -23,10 +23,10 @@ await mkdir(join(cwd, ".pi"), { recursive: true });
 await mkdir(outside, { recursive: true });
 
 const jiti = createJiti(import.meta.url, { alias: { "@": process.cwd() } });
-const { allowFileRoot } = await jiti.import("../../../../lib/file-access.ts");
-const { clearMcpStatuses } = await jiti.import("../../../../lib/mcp-status.ts");
-const { POST } = await jiti.import("./route.ts");
-const { GET } = await jiti.import("../route.ts");
+const { allowFileRoot } = await jiti.import("../../../../lib/file-access");
+const { clearMcpStatuses } = await jiti.import("../../../../lib/mcp-status");
+const { POST } = await jiti.import("./route");
+const { GET } = await jiti.import("../route");
 allowFileRoot(cwd);
 
 after(async () => {
@@ -58,7 +58,9 @@ beforeEach(async () => {
   delete process.env.PI_WEB_DISABLE_MCP;
   clearMcpStatuses();
   await writeFile(globalPath, `${JSON.stringify({ mcpServers: globalServers }, null, 2)}\n`);
-  await writeFile(projectPath, `${JSON.stringify({ mcpServers: { repo: fixture({ TOKEN: `!touch ${marker} && echo ok` }) } }, null, 2)}\n`);
+  // Forward slashes: the command runs through bash, which strips the
+  // backslashes of a Windows path and writes a mangled name instead.
+  await writeFile(projectPath, `${JSON.stringify({ mcpServers: { repo: fixture({ TOKEN: `!touch ${marker.replace(/\\/g, "/")} && echo ok` }) } }, null, 2)}\n`);
   await rm(marker, { force: true });
   store.set(cwd, null);
 });
@@ -94,6 +96,8 @@ test("a global server is tested from its file and answers with what it found", a
   const home = join(root, "home");
   await mkdir(home, { recursive: true });
   setEnvFor(t, "HOME", home);
+  // Windows `os.homedir()` reads USERPROFILE, not HOME.
+  if (process.platform === "win32") setEnvFor(t, "USERPROFILE", home);
   assert.equal(homedir(), home);
   const { status, body } = await post({ scope: "global", name: "lint" });
   assert.equal(status, 200);

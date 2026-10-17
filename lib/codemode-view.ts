@@ -3,6 +3,8 @@
 // mirror the SDK's `CodemodeToolDetails` / `CodemodeNestedCall`, read
 // defensively because a third-party tool may also be called `codemode`.
 
+import { compactCostOptions, formatUsdCost, type CostFormatter } from "./cost-format";
+
 export const CODEMODE_TOOL_NAME = "codemode";
 
 export type CodemodeCallStatus = "running" | "ok" | "error" | "cancelled";
@@ -89,8 +91,8 @@ export function formatCodemodeDuration(ms: number | undefined): string {
 }
 
 /** Cents for larger amounts, two significant digits for the fractions of a cent classifier calls cost. */
-export function formatCodemodeCost(cost: number): string {
-  return `$${cost >= 0.01 ? cost.toFixed(2) : cost.toPrecision(2)}`;
+export function formatCodemodeCost(cost: number, formatCost: CostFormatter = formatUsdCost): string {
+  return formatCost(cost, compactCostOptions(cost));
 }
 
 /** The total cost of the script's model calls, when more than one reported one. */

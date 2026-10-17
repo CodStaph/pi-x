@@ -8,7 +8,7 @@ const jiti = createJiti(import.meta.url, {
   jsx: { runtime: "automatic" },
   tsconfigPaths: true,
 });
-const { filteredPackagesKeptOn, packagesToSwitch } = await jiti.import("./PluginsConfig.tsx");
+const { filteredPackagesKeptOn, packagesToSwitch } = await jiti.import("./PluginsConfig");
 
 const packages = [
   { source: "npm:global-on", scope: "global", disabled: false, filtered: false },

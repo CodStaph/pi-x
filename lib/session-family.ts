@@ -48,7 +48,7 @@ export function listSessionFamilies(sessions: readonly SessionInfo[]): SessionFa
   const families = new Map<string, SessionFamily>();
 
   for (const session of sessions) {
-    if (session.relation?.kind === "subagent") continue;
+    if (session.relation?.kind === "subagent" || session.relation?.kind === "scheduled") continue;
     families.set(session.id, {
       root: session,
       subagents: [],

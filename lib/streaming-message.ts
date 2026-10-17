@@ -34,6 +34,14 @@ function updateContentBlock(
   if (!message || !Number.isInteger(contentIndex) || contentIndex < 0) return state;
 
   const content = [...message.content];
+  // pi-ai only ever starts a block exactly at the end of `content`, so an
+  // index beyond the current length means our partial is missing blocks (a
+  // `*_start` was dropped while the stream was detached). Assigning there
+  // leaves holes; the next spread turns those into explicit `undefined`
+  // entries, which crash the renderer (`isEmptyThinkingBlock` reads `.type`).
+  // Ignore the event instead — the `message_end` event and the post-run
+  // session reload carry the authoritative message and repair the bubble.
+  if (contentIndex > content.length) return state;
   const nextBlock = update(content[contentIndex]);
   if (!nextBlock) return state;
   content[contentIndex] = nextBlock;

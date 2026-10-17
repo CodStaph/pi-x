@@ -27,10 +27,10 @@ const {
   mcpImportNoteText,
   mcpImportProblemKey,
   mcpSuggestedVariableName,
-} = await jiti.import("./mcp-add-helpers.ts");
-const { MCP_IMPORT_NOTE_CODES, parseMcpImport, fillMcpImportFields } = await jiti.import("@/lib/mcp-import.ts");
-const { translateMessage } = await jiti.import("@/lib/i18n/format.ts");
-const { getLocalePlugin, getSupportedLocales } = await jiti.import("@/lib/i18n/registry.ts");
+} = await jiti.import("./mcp-add-helpers");
+const { MCP_IMPORT_NOTE_CODES, parseMcpImport, fillMcpImportFields } = await jiti.import("@/lib/mcp-import");
+const { translateMessage } = await jiti.import("@/lib/i18n/format");
+const { getLocalePlugin, getSupportedLocales } = await jiti.import("@/lib/i18n/registry");
 const helperSource = await readFile(new URL("./mcp-add-helpers.ts", import.meta.url), "utf8");
 const paneSource = await readFile(new URL("./McpAddServer.tsx", import.meta.url), "utf8");
 

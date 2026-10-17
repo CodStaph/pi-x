@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { useCostCurrency } from "@/hooks/useCostCurrency";
+import type { CostFormatter } from "@/lib/cost-format";
 import type { CodemodePreference } from "@/lib/codemode-settings";
 import type { NonChatModelInfo, NonChatModels, NonChatModelType } from "@/lib/nonchat-models";
 import {
@@ -34,7 +36,7 @@ export function groupByProvider(models: NonChatModelInfo[]): Array<{ provider: s
   return [...groups.values()];
 }
 
-const price = (value: number) => `$${Number(value.toPrecision(3))}`;
+const price = (value: number, formatCost: CostFormatter) => formatCost(value, { maximumFractionDigits: 6 });
 
 /**
  * Settings › Models › Classifier & image models. pi lists these models but keeps them out of
@@ -43,6 +45,7 @@ const price = (value: number) => `$${Number(value.toPrecision(3))}`;
  */
 export function NonChatModelsDetail({ onOpenMcp }: { onOpenMcp?: () => void }) {
   const { t } = useI18n();
+  const { formatCost } = useCostCurrency();
   const [data, setData] = useState<NonChatModelsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -101,7 +104,7 @@ export function NonChatModelsDetail({ onOpenMcp }: { onOpenMcp?: () => void }) {
                       <span className="nonchat-models-id">{model.id}</span>
                       {model.cost && (
                         <span className="nonchat-models-price">
-                          {t("models.nonChatPrice", { input: price(model.cost.input), output: price(model.cost.output) })}
+                          {t("models.nonChatPrice", { input: price(model.cost.input, formatCost), output: price(model.cost.output, formatCost) })}
                         </span>
                       )}
                     </div>

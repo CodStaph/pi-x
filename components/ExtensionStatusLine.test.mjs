@@ -9,7 +9,7 @@ const jiti = createJiti(import.meta.url, {
 });
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { ExtensionStatusLine, formatExtensionStatusLine } = await jiti.import("./ExtensionStatusLine.tsx");
+const { ExtensionStatusLine, formatExtensionStatusLine } = await jiti.import("./ExtensionStatusLine");
 
 const chatWindowSource = await readFile(new URL("./ChatWindow.tsx", import.meta.url), "utf8");
 const hookSource = await readFile(new URL("../hooks/useAgentSession.ts", import.meta.url), "utf8");

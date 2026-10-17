@@ -1,6 +1,6 @@
 [package]
 name = "pi-agent-desktop"
-version = "0.5.2"
+version = "0.6.6"
 description = "Desktop shell for Pi Agent"
 authors = ["pi-agent-desktop contributors"]
 license = "MIT"
@@ -12,19 +12,31 @@ name = "pi_agent_desktop_lib"
 crate-type = ["staticlib", "cdylib", "lib"]
 
 [build-dependencies]
-tauri-build = { version = "2.5.5", features = [] }
+tauri-build = { version = "2.7.1", features = [] }
 
 [dependencies]
 dunce = "1"
 getrandom = "0.3"
 libc = "0.2"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.151"
-tauri = { version = "2.10.2", features = ["tray-icon"] }
+tauri = { version = "2.12.1", features = ["tray-icon", "macos-private-api"] }
+tauri-plugin-autostart = "2"
 tauri-plugin-clipboard-manager = "^2"
 tauri-plugin-dialog = "^2"
 tauri-plugin-notification = "^2"
 tauri-plugin-process = "^2"
 tauri-plugin-updater = "^2"
+tauri-plugin-window-state = "^2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# NSVisualEffectView behind the (transparent) webview: the sidebar material.
+window-vibrancy = "0.8"
+# Re-applies the traffic-light inset after AppKit's own title-bar layout
+# (`refresh_traffic_lights` in src/shell/window_appkit.rs). Same versions
+# window-vibrancy already pulls in.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSString"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Avoid libappindicator's GTK menu bridge, which can render blank labels under GNOME.
@@ -40,3 +52,20 @@ codegen-units = 1
 lto = "thin"
 opt-level = "s"
 strip = true
+
+# Faster local release-shaped builds: skips LTO and parallelizes codegen.
+# Use for smoke-testing the packaged behaviour, never for a published build.
+[profile.release-fast]
+inherits = "release"
+codegen-units = 16
+lto = false
+opt-level = 1
+
+# Local workaround for cl.exe 14.51 (VS 2026): with debug info enabled cc-rs
+# asks for `/Z7`, and cl then dies with
+# `命令行 error D8050 :无法执行"...\c1.dll": 未能将命令行放入调试记录中`
+# whenever cargo (not a shell) is the parent process. Dropping debug info for
+# the C dependencies keeps `cargo check` and `tauri dev` working; release
+# profiles carry no debug info by default and are unaffected.
+[profile.dev.package.ring]
+debug = false

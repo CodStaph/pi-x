@@ -7,6 +7,12 @@ import { encodeFilePathForApi } from "@/lib/file-paths";
 import { markdownRehypePlugins, markdownRemarkPlugins, markdownUrlTransform, markdownUserRemarkPlugins, normalizeDisplayMath } from "@/lib/markdown";
 import { ImagePreview } from "./ImagePreview";
 import { MermaidBlock, CodeBlock } from "./MermaidBlock";
+import { HtmlPreviewBlock } from "./HtmlPreviewBlock";
+import { htmlPreviewKind } from "@/lib/html-preview";
+import { ArtifactCard } from "./ArtifactCard";
+import { ARTIFACT_FENCE_LANG, decodeArtifactFence, encodeArtifactsForMarkdown } from "@/lib/artifacts";
+import { useFileContextMenu } from "@/hooks/useFileContextMenu";
+import { inlineCodeFilePath } from "@/lib/file-context-menu";
 import { handleExternalLinkClick } from "@/lib/desktop-native";
 
 const MarkdownLinkContext = createContext(false);
@@ -19,6 +25,8 @@ interface MarkdownBodyProps {
   onOpenFile?: (filePath: string, page?: number) => void;
   /** Render every line ending as a line break, for text the user typed. */
   keepLineBreaks?: boolean;
+  /** Render `:::artifact{...}` blocks as artifact cards (assistant text only). */
+  artifacts?: boolean;
 }
 
 function MarkdownImage({
@@ -56,12 +64,30 @@ function buildComponents(
       const raw = String(children);
       const isBlock = className?.includes("language-") || raw.includes("\n");
       if (isBlock) {
+        if (lang === ARTIFACT_FENCE_LANG) {
+          const artifact = decodeArtifactFence(raw);
+          if (artifact) return <ArtifactCard block={artifact} isStreaming={isStreaming} />;
+        }
         if (lang === "mermaid") {
           return (
             <MermaidBlock
               code={raw.replace(/\n$/, "")}
               isStreaming={isStreaming}
               defaultPreview
+            />
+          );
+        }
+        // A complete HTML document, an SVG image or a self-contained React
+        // component renders instead of showing as code; a fragment stays code.
+        const previewKind = htmlPreviewKind(lang, raw);
+        if (previewKind) {
+          return (
+            <HtmlPreviewBlock
+              code={raw.replace(/\n$/, "")}
+              lang={lang}
+              kind={previewKind}
+              isStreaming={isStreaming}
+              defaultPreview={previewKind !== "react"}
             />
           );
         }
@@ -158,9 +184,13 @@ function useStreamingThrottle(value: string, active: boolean): string {
 
 // Memoized: markdown parsing + highlighting is the most expensive render work
 // in the app, so parent re-renders with identical props must be free.
-export const MarkdownBody = memo(function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, keepLineBreaks }: MarkdownBodyProps) {
+export const MarkdownBody = memo(function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, keepLineBreaks, artifacts }: MarkdownBodyProps) {
+  const fileContextMenu = useFileContextMenu(onOpenFile);
   const markdown = useStreamingThrottle(children, Boolean(isStreaming));
-  const normalizedMarkdown = useMemo(() => normalizeDisplayMath(markdown), [markdown]);
+  const normalizedMarkdown = useMemo(
+    () => normalizeDisplayMath(artifacts ? encodeArtifactsForMarkdown(markdown) : markdown),
+    [markdown, artifacts],
+  );
   const components = useMemo(
     () => buildComponents(isStreaming, cwd, onOpenFile),
     [isStreaming, cwd, onOpenFile],
@@ -179,7 +209,16 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
   ), [normalizedMarkdown, components, onOpenFile, keepLineBreaks]);
 
   return (
-    <div className={["markdown-body", className].filter(Boolean).join(" ")}>
+    <div className={['markdown-body', className].filter(Boolean).join(' ')} onContextMenu={(event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const link = target.closest('a');
+      const code = target.closest('code');
+      const href = link?.getAttribute('href') ?? undefined;
+      const filePath = link ? resolveLocalFileHref(href, cwd)
+        : code && !code.closest('pre') ? inlineCodeFilePath(code.textContent ?? '', cwd) : null;
+      if (filePath) fileContextMenu(event, { filePath, page: parsePdfPageFragment(href) ?? undefined, verify: true });
+    }}>
       {body}
     </div>
   );

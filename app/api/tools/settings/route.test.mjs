@@ -19,7 +19,7 @@ const jiti = createJiti(import.meta.url, {
   interopDefault: true,
   moduleCache: false,
 });
-const { GET, PUT } = await jiti.import("./route.ts");
+const { GET, PUT } = await jiti.import("./route");
 
 const settingsPath = path.join(agentDir, "settings.json");
 const isWindows = process.platform === "win32";

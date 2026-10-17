@@ -14,7 +14,7 @@ const jiti = createJiti(import.meta.url, {
   interopDefault: true,
   moduleCache: false,
 });
-const { GET, PUT } = await jiti.import("./route.ts");
+const { GET, PUT } = await jiti.import("./route");
 
 after(async () => {
   if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

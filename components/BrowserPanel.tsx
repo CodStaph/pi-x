@@ -36,10 +36,17 @@ function BrowserIcon({ type }: { type: "back" | "forward" | "reload" | "external
   );
 }
 
-export function BrowserPanel() {
+export interface BrowserPanelProps {
+  /** URL to show when the panel mounts (the card owns the URL across toggles). */
+  initialUrl?: string;
+  /** Reports committed navigations so the host can restore the page later. */
+  onUrlChange?: (url: string) => void;
+}
+
+export function BrowserPanel({ initialUrl = "", onUrlChange }: BrowserPanelProps = {}) {
   const { t } = useI18n();
-  const [address, setAddress] = useState("");
-  const [currentUrl, setCurrentUrl] = useState("");
+  const [address, setAddress] = useState(initialUrl);
+  const [currentUrl, setCurrentUrl] = useState(initialUrl);
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [reloadKey, setReloadKey] = useState(0);
@@ -49,12 +56,13 @@ export function BrowserPanel() {
     if (!nextUrl) return;
     setAddress(nextUrl);
     setCurrentUrl(nextUrl);
+    onUrlChange?.(nextUrl);
     setReloadKey(0);
     if (addToHistory) {
       setHistory((previous) => [...previous.slice(0, historyIndex + 1), nextUrl]);
       setHistoryIndex((previous) => previous + 1);
     }
-  }, [historyIndex]);
+  }, [historyIndex, onUrlChange]);
 
   const submit = useCallback((event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -68,8 +76,9 @@ export function BrowserPanel() {
     setHistoryIndex(nextIndex);
     setAddress(nextUrl);
     setCurrentUrl(nextUrl);
+    onUrlChange?.(nextUrl);
     setReloadKey(0);
-  }, [history, historyIndex]);
+  }, [history, historyIndex, onUrlChange]);
 
   return (
     <div className="context-browser-panel">

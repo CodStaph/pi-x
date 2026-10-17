@@ -15,8 +15,8 @@ await mkdir(cwd);
 await writeFile(join(agentDir, "extensions", "rtk.ts"), "export default () => {};\n");
 
 const jiti = createJiti(import.meta.url, { alias: { "@": process.cwd() } });
-const { allowFileRoot } = await jiti.import("../../../lib/file-access.ts");
-const { GET, POST } = await jiti.import("./route.ts");
+const { allowFileRoot } = await jiti.import("../../../lib/file-access");
+const { GET, POST } = await jiti.import("./route");
 allowFileRoot(cwd);
 
 after(async () => {

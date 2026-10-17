@@ -9,10 +9,10 @@ const jiti = createJiti(import.meta.url, {
 });
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { I18nProvider } = await jiti.import("@/hooks/useI18n.tsx");
-const { McpConfig, McpConfigView } = await jiti.import("./McpConfig.tsx");
-const { ConfigSidebarGroupSwitch } = await jiti.import("./SettingsUi.tsx");
-const { enLocale } = await jiti.import("@/lib/i18n/messages/en.ts");
+const { I18nProvider } = await jiti.import("@/hooks/useI18n");
+const { McpConfig, McpConfigView } = await jiti.import("./McpConfig");
+const { ConfigSidebarGroupSwitch } = await jiti.import("./SettingsUi");
+const { enLocale } = await jiti.import("@/lib/i18n/messages/en");
 const source = await readFile(new URL("./McpConfig.tsx", import.meta.url), "utf8");
 const helperSource = await readFile(new URL("./mcp-config-helpers.ts", import.meta.url), "utf8");
 const displaySource = await readFile(new URL("../lib/mcp-server-display.ts", import.meta.url), "utf8");
@@ -1175,7 +1175,7 @@ function testView(serverOverrides = {}, props = {}) {
   });
 }
 
-const { mcpServerKey } = await jiti.import("./mcp-config-helpers.ts");
+const { mcpServerKey } = await jiti.import("./mcp-config-helpers");
 
 test("an untested server offers Test in its header, beside Remove", () => {
   const html = testView();
@@ -1203,8 +1203,7 @@ test("a connected test shows what it listed, and the row reads connected", () =>
       { name: "bidi‮tool", readOnly: false, exposure: "codemode" },
     ],
     serverInfo: { name: "docs-server", version: "2.1.0" },
-    resources: 4,
-    resourceTemplates: 1,
+    resources: true,
   });
   const html = testView({ status });
   const markup = decode(html);
@@ -1214,7 +1213,7 @@ test("a connected test shows what it listed, and the row reads connected", () =>
   const { value, text: shown } = connection(html);
   assert.match(value, /<span class="mcp-config-state is-on">Connected<\/span> 3 tool\(s\) listed in 0\.4 s, tested at [^.]+\./);
   assert.match(shown, /Server: docs-server 2\.1\.0/);
-  assert.match(shown, /4 resource\(s\) and 1 resource template\(s\)\./);
+  assert.match(shown, /Offers resources, listed when a session reads them\./);
   assert.doesNotMatch(shown, /Ran in/, "an HTTP server runs in no folder");
   // The Connection row right under it says what the test found; the Status row adds no sentence.
   assert.match(text(markup), /Status Connected when tested Connection Connected/);

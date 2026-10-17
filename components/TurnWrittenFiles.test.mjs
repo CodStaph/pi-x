@@ -8,7 +8,7 @@ const jiti = createJiti(import.meta.url, {
 });
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { TurnWrittenFiles } = await jiti.import("./TurnWrittenFiles.tsx");
+const { TurnWrittenFiles } = await jiti.import("./TurnWrittenFiles");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
 
 function render(props) {

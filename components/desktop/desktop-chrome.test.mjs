@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { dirname } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import { createJiti } from "jiti";
 
 /**
@@ -22,7 +23,7 @@ import { createJiti } from "jiti";
 // which jiti does not read on its own.
 const rootDir = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const jiti = createJiti(import.meta.url, { alias: { "@": rootDir } });
-const { desktopChromeFor: chromeFor } = await jiti.import("./useDesktopChrome.ts");
+const { desktopChromeFor: chromeFor } = await jiti.import("./useDesktopChrome");
 
 const PLATFORMS = ["macos", "windows", "linux", null];
 
@@ -61,6 +62,15 @@ test("macOS keeps its native traffic lights and draws no buttons", () => {
   assert.equal(chrome.isMacOS, true);
   assert.equal(chrome.isDesktop && !chrome.isMacOS, false);
   assert.equal(chrome.dragRegionProps["data-tauri-drag-region"], true);
+});
+
+test("macOS traffic lights share the sidebar controls' centre line", () => {
+  const css = readFileSync(new URL("../../app/native-theme.css", import.meta.url), "utf8");
+  // traffic_light_y() (src-tauri/src/shell/window_appkit.rs) puts the lights'
+  // centre at 24pt. A 48px controls row is centred at the same 24px without
+  // pushing the sidebar header down (the bug reported in #108).
+  assert.match(css, /\.session-sidebar-header--mac-inset \{[\s\S]*?padding-top: 0 !important;/);
+  assert.match(css, /\.sidebar-controls-row \{[\s\S]*?height: 48px;/);
 });
 
 test("windows and linux draw their own buttons", () => {

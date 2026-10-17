@@ -21,8 +21,8 @@ const jiti = createJiti(import.meta.url, {
   interopDefault: true,
   moduleCache: false,
 });
-const { GET } = await jiti.import("./[...path]/route.ts");
-const { allowFileRoot } = await jiti.import("../../../lib/allowed-roots.ts");
+const { GET } = await jiti.import("./[...path]/route");
+const { allowFileRoot } = await jiti.import("../../../lib/allowed-roots");
 allowFileRoot(root);
 
 function write(filePath, content = "") {

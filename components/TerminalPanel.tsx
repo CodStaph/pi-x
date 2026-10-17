@@ -6,19 +6,33 @@ import { Terminal } from "@xterm/xterm";
 import { useI18n } from "@/hooks/useI18n";
 import { createTerminalWriter, terminalRequest } from "@/lib/terminal-client";
 import type { TerminalEvent } from "@/lib/terminal-manager";
+import type { TerminalShellProfile } from "@/lib/terminal-shells";
 import type { TerminalTab } from "./terminal-tab-state";
 
 interface Props {
   tab: TerminalTab;
   active: boolean;
+  shells: TerminalShellProfile[];
+  defaultShell: string;
+  onShellChange: (tab: TerminalTab, shell: string) => void;
+  onSetDefaultShell: (shell: string) => void;
   onRestart: () => void;
   onClosed: () => void;
   onCloseError: () => void;
 }
 
-export function TerminalPanel({ tab, active, onRestart, onClosed, onCloseError }: Props) {
+export function TerminalPanel({ tab, active, shells, defaultShell, onShellChange, onSetDefaultShell, onRestart, onClosed, onCloseError }: Props) {
   const { t } = useI18n();
   const { id, cwd, restored } = tab;
+  // Fall back to the first detected profile when the saved id is not offered on
+  // this platform (e.g. a Windows shell id restored on POSIX).
+  const selectedShell = shells.some((shell) => shell.id === (tab.shell ?? defaultShell))
+    ? (tab.shell ?? defaultShell)
+    : (shells[0]?.id ?? tab.shell ?? defaultShell);
+  const isDefaultShell = selectedShell === defaultShell;
+  const shellOptions = shells.some((shell) => shell.id === selectedShell)
+    ? shells
+    : [{ id: selectedShell, kind: "system" as const, available: true }, ...shells];
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const startRef = useRef<Promise<void>>(Promise.resolve());
@@ -140,7 +154,7 @@ export function TerminalPanel({ tab, active, onRestart, onClosed, onCloseError }
         await terminalRequest("/api/terminal", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id, cwd, cols: terminal.cols, rows: terminal.rows }),
+          body: JSON.stringify({ id, cwd, cols: terminal.cols, rows: terminal.rows, shell: selectedShell }),
         });
       }
       connect();
@@ -175,6 +189,9 @@ export function TerminalPanel({ tab, active, onRestart, onClosed, onCloseError }
       terminal.dispose();
       terminalRef.current = null;
     };
+    // The shell only matters at spawn; changing it restarts the tab under a new
+    // id, so it is not a dependency here (it would race the restart).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, cwd, restored, reconnectKey]);
 
   useEffect(() => {
@@ -206,6 +223,7 @@ export function TerminalPanel({ tab, active, onRestart, onClosed, onCloseError }
           <span className={`terminal-status-dot is-${status}`} title={t(`terminal.${status}`)} />
           <span title={cwd}>{cwd}</span>
         </div>
+        <div className="terminal-panel-actions">
         {status === "error" && (
           <button type="button" onClick={() => setReconnectKey((key) => key + 1)} disabled={Boolean(tab.closing)} title={t("terminal.reconnect")} aria-label={t("terminal.reconnect")}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -213,11 +231,39 @@ export function TerminalPanel({ tab, active, onRestart, onClosed, onCloseError }
             </svg>
           </button>
         )}
+        <select
+          className="terminal-shell-select"
+          value={selectedShell}
+          onChange={(event) => onShellChange(tab, event.target.value)}
+          disabled={Boolean(tab.closing)}
+          title={t("terminal.shell")}
+          aria-label={t("terminal.shell")}
+        >
+          {shellOptions.map((shell) => (
+            <option key={shell.id} value={shell.id} disabled={!shell.available}>
+              {t(`terminal.shell.${shell.id}`)}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className={`terminal-shell-default${isDefaultShell ? " is-default" : ""}`}
+          onClick={() => onSetDefaultShell(selectedShell)}
+          disabled={Boolean(tab.closing) || isDefaultShell}
+          title={t(isDefaultShell ? "terminal.shellIsDefault" : "terminal.setDefaultShell")}
+          aria-label={t(isDefaultShell ? "terminal.shellIsDefault" : "terminal.setDefaultShell")}
+          aria-pressed={isDefaultShell}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill={isDefaultShell ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+          </svg>
+        </button>
         <button type="button" onClick={onRestart} disabled={Boolean(tab.closing)} title={t("terminal.restart")} aria-label={t("terminal.restart")}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M20 11a8 8 0 1 0-2.34 5.66" /><polyline points="20 4 20 11 13 11" />
           </svg>
         </button>
+        </div>
       </header>
       <div>
         {error && <div className="terminal-panel-error" role="alert">{error}</div>}

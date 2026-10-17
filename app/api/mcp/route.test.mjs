@@ -22,8 +22,8 @@ await mkdir(join(cwd, ".pi"), { recursive: true });
 await mkdir(outside, { recursive: true });
 
 const jiti = createJiti(import.meta.url, { alias: { "@": process.cwd() } });
-const { allowFileRoot } = await jiti.import("../../../lib/file-access.ts");
-const { GET } = await jiti.import("./route.ts");
+const { allowFileRoot } = await jiti.import("../../../lib/file-access");
+const { GET } = await jiti.import("./route");
 allowFileRoot(cwd);
 
 after(async () => {
@@ -348,8 +348,8 @@ test("a trusted project whose own defaultTools decides Code mode there is report
 });
 
 test("what an open session reported is listed with its entry, and a session whose /mcp is another extension's is named", async (t) => {
-  const { mcpConfigKey } = await jiti.import("../../../lib/mcp-config-key.ts");
-  const { clearMcpStatuses, recordMcpHostInactive, recordMcpStatus } = await jiti.import("../../../lib/mcp-status.ts");
+  const { mcpConfigKey } = await jiti.import("../../../lib/mcp-config-key");
+  const { clearMcpStatuses, recordMcpHostInactive, recordMcpStatus } = await jiti.import("../../../lib/mcp-status");
   t.after(clearMcpStatuses);
   const reported = { origin: "session", state: "conflict", conflict: "/ext/docs.ts", sessionId: "s1", cwd, updatedAt: 5 };
   recordMcpStatus({ scope: "global", sourcePath: globalPath, name: "docs" }, mcpConfigKey({ url: "https://docs.example.com/mcp" }), reported);

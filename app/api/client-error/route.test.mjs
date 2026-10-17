@@ -7,8 +7,8 @@ const jiti = createJiti(import.meta.url, {
   interopDefault: true,
   moduleCache: false,
 });
-const { POST } = await jiti.import("./route.ts");
-const { MAX_CLIENT_ERROR_REPORT_BYTES } = await jiti.import("../../../lib/client-error-report.ts");
+const { POST } = await jiti.import("./route");
+const { MAX_CLIENT_ERROR_REPORT_BYTES } = await jiti.import("../../../lib/client-error-report");
 
 function post(body, { raw = false } = {}) {
   return POST(

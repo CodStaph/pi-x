@@ -149,9 +149,13 @@ test("trusting from Settings › MCP reloads, in place, the other mounted sectio
   assert.match(panelSource, /sectionHost\("models", <ModelsConfig embedded cwd=\{cwd\} onClose=\{onClose\} onOpenMcp=\{\(\) => activateSection\("mcp"\)\} \/>\)/);
 });
 
-test("offers five palettes and system theme selection with native radios", () => {
-  for (const preference of ["light", "dark", "mist", "rose", "pine", "auto"]) {
+test("offers light, dark and system theme selection with native radios", () => {
+  for (const preference of ["light", "dark", "auto"]) {
     assert.match(themeOptionsSource, new RegExp(`id: "${preference}"`));
+  }
+  // The tinted palettes were removed; a stored one must fall back to system.
+  for (const removed of ["mist", "rose", "pine"]) {
+    assert.doesNotMatch(themeOptionsSource, new RegExp(`id: "${removed}"`));
   }
   assert.match(panelSource, /THEME_OPTIONS\.map/);
   assert.match(panelSource, /type="radio"/);
@@ -178,12 +182,17 @@ test("groups chat display controls together without row backgrounds", () => {
   assert.doesNotMatch(appearanceSection, /settings-chat-content/);
   assert.match(chatSection, /className="settings-chat-options"/);
   // The fork's diffViewMode choice rides in the same group after the merged
-  // send-mode radio (thinking, width, font, quote, send mode, diff view).
-  assert.equal((chatSection.match(/className="settings-chat-option(?: |")/g) ?? []).length, 6);
-  assert.equal((chatSection.match(/<ConfigSwitch/g) ?? []).length, 2);
-  for (const key of ["thinkingExpandedDefault", "chatContentWidth", "chatContentFontSize", "quoteSelection", "enterSendMode", "enterSendModeEnter", "enterSendModeCtrlEnter"]) {
+  // send-mode radio (thinking, width, font, quote, completion sound, send mode,
+  // diff view, localized output). The sound switch moved here from the composer row.
+  assert.equal((chatSection.match(/className="settings-chat-option(?: |")/g) ?? []).length, 8);
+  assert.equal((chatSection.match(/<ConfigSwitch/g) ?? []).length, 4);
+  for (const key of ["thinkingExpandedDefault", "chatContentWidth", "chatContentFontSize", "quoteSelection", "completionSound", "enterSendMode", "enterSendModeEnter", "enterSendModeCtrlEnter", "localizedOutput", "localizedOutputHint"]) {
     assert.match(chatSection, new RegExp(`t\\("settings\\.${key}"\\)`));
   }
+  // The localized-output switch is server state: it reads and writes the
+  // global APPEND_SYSTEM.md through its route, not localStorage.
+  assert.match(panelSource, /fetch\("\/api\/localized-output"\)/);
+  assert.match(chatSection, /saveLocalizedOutput\(enabled, locale\)/);
   assert.doesNotMatch(panelSource, /ThinkingIcon|settings-thinking-/);
   const chatOptionStyles = cssSource.match(/\.settings-chat-option \{[\s\S]*?\}/)?.[0] ?? "";
   assert.match(chatOptionStyles, /font-size: 12px/);

@@ -49,6 +49,19 @@ export interface ToolSettingsResponse {
   codemodeInlineBudget: CodemodeInlineBudgetSetting;
 }
 
+/** A language the "reply in the interface language" switch can write into APPEND_SYSTEM.md. */
+export type LocalizedOutputLocale = "en" | "zh-CN" | "zh-TW";
+
+/** Settings › Chat's localized-output switch: the state of the global APPEND_SYSTEM.md managed block. */
+export interface LocalizedOutputResponse {
+  /** Whether this setting's managed block is in the file. */
+  enabled: boolean;
+  /** The locale the block currently asks for, when it is one we recognize. */
+  locale?: LocalizedOutputLocale;
+  /** Absolute path of the file the switch edits. */
+  path: string;
+}
+
 export interface SkillSearchResult {
   package: string;
   installs: string;
@@ -340,9 +353,11 @@ export interface McpTestResult {
   /** At most `MCP_TEST_MAX_TOOLS`, in the server's order; `toolCount` counts all of them. */
   tools: McpTestTool[];
   toolCount: number;
-  /** Present when the server offers resources. */
-  resources?: number;
-  resourceTemplates?: number;
+  /**
+   * Present when the server offers resources. Not a count: pi lists them on
+   * demand since 1.2.0, because listing every resource can take long.
+   */
+  resources?: true;
   serverInfo?: { name: string; version: string; title?: string };
   /** The folder a stdio server ran in. */
   cwd?: string;
@@ -794,13 +809,6 @@ export interface ProjectTrustResponse extends ProjectTrustStatus, ProjectMcpList
 export interface ProjectTrustUnreadableResponse extends ProjectMcpListing {
   error: string;
   reason: "trust-unreadable";
-}
-
-export interface AppUpdateResponse {
-  currentVersion: string;
-  latestVersion: string;
-  updateAvailable: boolean;
-  releaseUrl: string;
 }
 
 export interface PushConfigResponse {

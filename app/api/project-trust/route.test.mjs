@@ -24,9 +24,9 @@ await mkdir(fresh, { recursive: true });
 await mkdir(outside, { recursive: true });
 
 const jiti = createJiti(import.meta.url, { alias: { "@": process.cwd() } });
-const { allowFileRoot } = await jiti.import("../../../lib/file-access.ts");
-const { SECRET_MASK } = await jiti.import("../../../lib/mcp-secrets.ts");
-const { GET, POST } = await jiti.import("./route.ts");
+const { allowFileRoot } = await jiti.import("../../../lib/file-access");
+const { SECRET_MASK } = await jiti.import("../../../lib/mcp-secrets");
+const { GET, POST } = await jiti.import("./route");
 allowFileRoot(cwd);
 allowFileRoot(fresh);
 

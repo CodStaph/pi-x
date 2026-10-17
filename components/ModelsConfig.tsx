@@ -12,6 +12,9 @@ import {
   hasModelCostDraftValue,
   modelCostToDraft,
   parseCompleteModelCost,
+  listModelOverrides,
+  modelOverrideSpecs,
+  resolveModelSpecHint,
   savedModelIds,
   serializeHeaderRows,
   setCompatBool,
@@ -22,6 +25,7 @@ import {
   type HeaderRow,
   type ModelCostDraft,
   type ModelCostKey,
+  type ModelSpecField,
 } from "./models-config-helpers";
 import {
   ConfigButton,
@@ -51,6 +55,7 @@ import {
   type EnabledModelsController,
 } from "./EnabledModelsSection";
 import { NonChatModelsDetail } from "./NonChatModelsDetail";
+import { useCostCurrency } from "@/hooks/useCostCurrency";
 import { providerBadgeLabel } from "./enabled-models-helpers";
 import { OAuthPastePanel } from "./OAuthPastePanel";
 import { ProviderIcon } from "./ProviderIcon";
@@ -187,7 +192,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 const inputStyle = {
   padding: "6px 9px",
   background: "var(--bg-panel)",
-  border: "1px solid var(--border)",
+  border: "var(--hairline) solid var(--border)",
   borderRadius: 5,
   color: "var(--text)",
   fontSize: 12,
@@ -362,6 +367,7 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
   }, [discoveryState.phase, name, provider]);
 
   const existingModelIds = new Set((provider.models ?? []).map((model) => model.id));
+  const modelOverrides = listModelOverrides(provider.modelOverrides);
   const discoveredModels = discoveryState.phase === "success" ? discoveryState.models : [];
   const normalizedDiscoveryQuery = discoveryQuery.trim().toLocaleLowerCase();
   const filteredDiscoveredModels = discoveredModels.filter((model) => !normalizedDiscoveryQuery
@@ -458,13 +464,39 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
         </span>
       </Field>
 
-      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+      {modelOverrides.length > 0 && (
+        <section className="models-override-section">
+          <SectionTitle>{t("models.overridesTitle")}</SectionTitle>
+          <span className="models-override-help">{t("models.overridesHelp")}</span>
+          <ul className="models-override-list">
+            {modelOverrides.map(({ modelId, fields }) => (
+              <li key={modelId} className="models-override-row">
+                <code className="models-override-id">{modelId}</code>
+                <span className="models-override-target">
+                  {existingModelIds.has(modelId) ? t("models.overrideTargetCustom") : t("models.overrideTargetBuiltIn")}
+                </span>
+                <span className="models-override-fields">
+                  {Object.entries(fields).map(([key, value]) => (
+                    <span key={key} className="models-override-field">
+                      {key}
+                      {(typeof value === "number" || typeof value === "boolean" || typeof value === "string")
+                        && <span className="models-override-value">{typeof value === "number" ? value.toLocaleString() : String(value)}</span>}
+                    </span>
+                  ))}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <div style={{ borderTop: "var(--hairline) solid var(--border)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
         {discoveryState.phase !== "success" && (
           <button
             onClick={handleDiscoverModels}
             disabled={discoveryState.phase === "loading"}
             style={{
-              alignSelf: "flex-start", height: 30, padding: "0 12px", border: "1px solid var(--border)", borderRadius: 5,
+              alignSelf: "flex-start", height: 30, padding: "0 12px", border: "var(--hairline) solid var(--border)", borderRadius: 5,
               background: "var(--bg-panel)", color: discoveryState.phase === "loading" ? "var(--text-dim)" : "var(--text-muted)",
               cursor: discoveryState.phase === "loading" ? "not-allowed" : "pointer", fontSize: 11,
             }}
@@ -474,7 +506,7 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
         )}
 
         {discoveryState.phase === "error" && (
-          <div style={{ padding: "7px 9px", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 5, color: "#ef4444", fontSize: 11, lineHeight: 1.4 }}>
+          <div style={{ padding: "7px 9px", border: "var(--hairline) solid rgba(239,68,68,0.3)", borderRadius: 5, color: "#ef4444", fontSize: 11, lineHeight: 1.4 }}>
             {discoveryState.message}
           </div>
         )}
@@ -489,11 +521,11 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
               style={{ ...inputStyle, width: "100%", minWidth: 0 }}
             />
 
-            <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)" }}>
+            <div style={{ maxHeight: 220, overflowY: "auto", border: "var(--hairline) solid var(--border)", borderRadius: 6, background: "var(--bg-panel)" }}>
               <label
                 style={{
                   minHeight: 32, padding: "5px 9px", display: "flex", alignItems: "center", gap: 8,
-                  position: "sticky", top: 0, zIndex: 1, borderBottom: "1px solid var(--border)",
+                  position: "sticky", top: 0, zIndex: 1, borderBottom: "var(--hairline) solid var(--border)",
                   background: "var(--bg)", cursor: selectableShownIds.length ? "pointer" : "default",
                   color: "var(--text-muted)", fontSize: 10, fontWeight: 600,
                 }}
@@ -638,7 +670,7 @@ function ThinkingLevelMapEditor({
               padding: "5px 4px",
               borderRadius: 6,
               background: "transparent",
-              border: "1px solid transparent",
+              border: "var(--hairline) solid transparent",
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 5, width: 68, flexShrink: 0 }}>
@@ -653,7 +685,7 @@ function ThinkingLevelMapEditor({
               </span>
             </div>
 
-            <div style={{ display: "flex", borderRadius: 5, border: "1px solid var(--border)", overflow: "hidden", flexShrink: 0 }}>
+            <div style={{ display: "flex", borderRadius: 5, border: "var(--hairline) solid var(--border)", overflow: "hidden", flexShrink: 0 }}>
               <button
                 onClick={() => setLevel(level, "omit")}
                 style={{ ...btnBase, ...(state === "omit" ? btnActive : {}) }}
@@ -662,7 +694,7 @@ function ThinkingLevelMapEditor({
               </button>
               <button
                 onClick={() => setLevel(level, null)}
-                style={{ ...btnBase, borderLeft: "1px solid var(--border)", ...(state === "null" ? btnActiveDisabled : {}) }}
+                style={{ ...btnBase, borderLeft: "var(--hairline) solid var(--border)", ...(state === "null" ? btnActiveDisabled : {}) }}
               >
                 Disabled
               </button>
@@ -671,7 +703,7 @@ function ThinkingLevelMapEditor({
             <div style={{ display: "flex", borderRadius: 5, border: `1px solid ${state === "string" ? "var(--accent)" : "var(--border)"}`, overflow: "hidden", transition: "border-color 0.1s" }}>
               <button
                 onClick={() => setLevel(level, strVal || level)}
-                style={{ ...btnBase, ...(state === "string" ? btnActive : {}), borderRight: "1px solid var(--border)", flexShrink: 0 }}
+                style={{ ...btnBase, ...(state === "string" ? btnActive : {}), borderRight: "var(--hairline) solid var(--border)", flexShrink: 0 }}
               >
                 Custom
               </button>
@@ -755,7 +787,7 @@ function HeaderListEditor({ headers, onChange }: {
   const rowBtnStyle = {
     padding: "6px 9px",
     background: "none",
-    border: "1px solid rgba(239,68,68,0.3)",
+    border: "var(--hairline) solid rgba(239,68,68,0.3)",
     borderRadius: 4,
     color: "#ef4444",
     cursor: "pointer",
@@ -777,7 +809,7 @@ function HeaderListEditor({ headers, onChange }: {
         ...current,
         { id: nextRowIdRef.current++, name: "", value: "" },
       ])}
-        style={{ padding: "5px 9px", background: "none", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text-muted)", cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5, alignSelf: "flex-start" }}>
+        style={{ padding: "5px 9px", background: "none", border: "var(--hairline) solid var(--border)", borderRadius: 4, color: "var(--text-muted)", cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5, alignSelf: "flex-start" }}>
         + Add header
       </button>
     </div>
@@ -833,17 +865,51 @@ function ModelDetail({
   providerName,
   provider,
   model,
+  savedModel,
   onChange,
   onDelete,
 }: {
   providerName: string;
   provider: ProviderEntry;
   model: ModelEntry;
+  /** This slot as models.json has it on disk, or null for a model added since the last save. */
+  savedModel: ModelEntry | null;
   onChange: (m: ModelEntry) => void;
   onDelete: () => void;
 }) {
   const [testState, setTestState] = useState<ModelTestState>({ phase: "idle" });
   const { t } = useI18n();
+  const { formatCost: formatCurrencyCost } = useCostCurrency();
+  // pi applies the provider's modelOverrides last, over this entry, so a saved
+  // override is the value a session gets even when the field below is filled.
+  const overrideSpecs = modelOverrideSpecs(provider.modelOverrides, model.id);
+  const overrideEntry = listModelOverrides(provider.modelOverrides)
+    .find((entry) => entry.modelId === model.id.trim());
+  const specField = (field: ModelSpecField, label: string) => {
+    const draftValue = model[field];
+    const overrideValue = overrideSpecs[field];
+    const hint = resolveModelSpecHint(field, draftValue, overrideValue);
+    const unsaved = draftValue !== savedModel?.[field];
+    let hintText: string;
+    if (hint.kind === "override") {
+      hintText = t(hint.replacesDraft ? "models.specOverrideReplaces" : "models.specOverride", { value: hint.value.toLocaleString() });
+    } else if (hint.kind === "fallback") {
+      hintText = t("models.specFallback", { value: hint.value.toLocaleString() });
+    } else {
+      hintText = t(unsaved ? "models.specUnsaved" : "models.specSaved");
+    }
+    return (
+      <Field label={label}>
+        <NumInput value={draftValue !== undefined ? String(draftValue) : ""}
+          onChange={(v) => set(field, v ? parseInt(v) : undefined)}
+          placeholder={overrideValue !== undefined ? overrideValue.toLocaleString() : t("models.specNotSet")} />
+        <span className="models-spec-hint" data-source={hint.kind}>
+          {hintText}
+          {unsaved && hint.kind !== "own" && <span className="models-spec-unsaved">{t("models.specUnsavedTag")}</span>}
+        </span>
+      </Field>
+    );
+  };
   const [catalogState, setCatalogState] = useState<ModelCatalogState>({ phase: "idle" });
   const [costEditing, setCostEditing] = useState(false);
   const [costDraft, setCostDraft] = useState<ModelCostDraft>(() => modelCostToDraft(model.cost));
@@ -1015,7 +1081,7 @@ function ModelDetail({
   ] as const;
   const formatCost = (key: ModelCostKey): string => {
     const value = model.cost?.[key];
-    return value === undefined ? t("models.notProvided") : `$${String(value)}`;
+    return value === undefined ? t("models.notProvided") : formatCurrencyCost(value, { maximumFractionDigits: 6 });
   };
   const remainingCompatKeys = new Set(Object.keys(model.compat ?? {}));
   let compatibilityOverrideCount = 0;
@@ -1105,7 +1171,7 @@ function ModelDetail({
             onClick={() => void handleCatalogFill()}
             disabled={!model.id.trim() || catalogState.phase === "loading"}
             style={{
-              height: 28, padding: "0 10px", border: "1px solid var(--border)", borderRadius: 5,
+              height: 28, padding: "0 10px", border: "var(--hairline) solid var(--border)", borderRadius: 5,
               background: "var(--bg-panel)",
               color: !model.id.trim() || catalogState.phase === "loading" ? "var(--text-dim)" : "var(--text-muted)",
               cursor: !model.id.trim() || catalogState.phase === "loading" ? "not-allowed" : "pointer",
@@ -1172,15 +1238,15 @@ function ModelDetail({
           </button>
         </div>
 
+        {overrideEntry && (
+          <div className="models-override-notice">
+            {t("models.overrideNotice", { id: model.id.trim(), fields: Object.keys(overrideEntry.fields).join(", ") })}
+          </div>
+        )}
+
         <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
-          <Field label={t("models.contextWindow")}>
-            <NumInput value={model.contextWindow !== undefined ? String(model.contextWindow) : ""}
-              onChange={(v) => set("contextWindow", v ? parseInt(v) : undefined)} placeholder="128000" />
-          </Field>
-          <Field label={t("models.maxOutputTokens")}>
-            <NumInput value={model.maxTokens !== undefined ? String(model.maxTokens) : ""}
-              onChange={(v) => set("maxTokens", v ? parseInt(v) : undefined)} placeholder="16384" />
-          </Field>
+          {specField("contextWindow", t("models.contextWindow"))}
+          {specField("maxTokens", t("models.maxOutputTokens"))}
         </div>
 
         <div style={{ marginTop: 16 }}>
@@ -1218,7 +1284,7 @@ function ModelDetail({
         </div>
       </section>
 
-      <section style={{ borderTop: "1px solid var(--border)", paddingTop: 4 }}>
+      <section style={{ borderTop: "var(--hairline) solid var(--border)", paddingTop: 4 }}>
         <button
           type="button"
           onClick={() => setAdvancedOpen((open) => !open)}
@@ -1293,6 +1359,11 @@ function ModelDetail({
                         {t("models.clearAll")}
                       </button>
                     )}
+                  </div>
+                  {/* pi's getSupportedThinkingLevels() offers xhigh/max only for an
+                      explicit map entry, so without one the selector stops at high (#76). */}
+                  <div style={{ fontSize: 10, color: "var(--text-dim)", marginBottom: 8 }}>
+                    {t("models.thinkingLevelMapHelp")}
                   </div>
                   <ThinkingLevelMapEditor
                     value={model.thinkingLevelMap}
@@ -1501,7 +1572,7 @@ function OAuthDetail({ provider, onRefresh, enabledModels }: {
                 <button
                   key={option.id}
                   onClick={() => submitSelection(loginState.token, option.id)}
-                  style={{ padding: "6px 9px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text)", cursor: "pointer", fontSize: 12, textAlign: "left" }}
+                  style={{ padding: "6px 9px", background: "var(--bg)", border: "var(--hairline) solid var(--border)", borderRadius: 5, color: "var(--text)", cursor: "pointer", fontSize: 12, textAlign: "left" }}
                 >
                   {option.label}
                 </button>
@@ -1536,7 +1607,7 @@ function OAuthDetail({ provider, onRefresh, enabledModels }: {
             <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
               Open the verification page and enter this code:
             </p>
-            <div style={{ padding: "8px 10px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text)", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", letterSpacing: 0 }}>
+            <div style={{ padding: "8px 10px", background: "var(--bg)", border: "var(--hairline) solid var(--border)", borderRadius: 5, color: "var(--text)", fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", letterSpacing: 0 }}>
               {loginState.userCode}
             </div>
             <p style={{ margin: 0, fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>
@@ -1733,7 +1804,7 @@ function AddProviderPicker({
     display: "flex", flexDirection: "row", alignItems: "center", gap: 8,
     padding: "10px 12px",
     background: "var(--bg-panel)",
-    border: "1px solid var(--border)",
+    border: "var(--hairline) solid var(--border)",
     borderRadius: 7,
     boxSizing: "border-box",
     cursor: "pointer",
@@ -1756,9 +1827,9 @@ function AddProviderPicker({
         onClose();
       }}
     >
-      <div style={{ width: 820, maxWidth: "calc(100vw - 32px)", maxHeight: "min(72vh, calc(100vh - 32px))", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, display: "flex", flexDirection: "column", boxShadow: "0 8px 32px rgba(0,0,0,0.22)", overflow: "hidden" }}>
+      <div style={{ width: 820, maxWidth: "calc(100vw - 32px)", maxHeight: "min(72vh, calc(100vh - 32px))", background: "var(--bg)", border: "var(--hairline) solid var(--border)", borderRadius: 10, display: "flex", flexDirection: "column", boxShadow: "0 8px 32px rgba(0,0,0,0.22)", overflow: "hidden" }}>
         {/* Search */}
-        <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0, display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ padding: "10px 14px", borderBottom: "var(--hairline) solid var(--border)", flexShrink: 0, display: "flex", alignItems: "center", gap: 8 }}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-dim)", flexShrink: 0 }}>
             <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
           </svg>
@@ -1873,6 +1944,8 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null, onOpenMcp 
    * from an unrelated edit without guessing.
    */
   const savedModelIdsRef = useRef<Map<string, (string | null)[]>>(new Map());
+  /** models.json as it is on disk, for the spec-field "saved" comparison. */
+  const [savedConfig, setSavedConfig] = useState<ModelsJson>({ providers: {} });
   /**
    * The provider name field while it differs from the provider's id. Save
    * applies it like every other visible edit; Rename applies it right away.
@@ -1901,6 +1974,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null, onOpenMcp 
         setConfig(normalized);
         savedProvidersRef.current = new Set(Object.keys(normalized.providers ?? {}));
         savedModelIdsRef.current = savedModelIds(normalized);
+        setSavedConfig(normalized);
         const keys = Object.keys(normalized.providers ?? {});
         setSelection((current) => current && customSelectionExists(normalized, current)
           ? current
@@ -2114,12 +2188,19 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null, onOpenMcp 
     const provider = config.providers?.[selection.providerName];
     const model = provider?.models?.[selection.index];
     if (!model) return null;
+    let savedProviderName = selection.providerName;
+    for (const [from, to] of renamesRef.current) if (to === selection.providerName) savedProviderName = from;
+    const savedId = savedModelIdsRef.current.get(selection.providerName)?.[selection.index];
+    const savedModel = savedId == null
+      ? null
+      : savedConfig.providers?.[savedProviderName]?.models?.find((entry) => entry.id === savedId) ?? null;
     return (
       <ModelDetail
         key={`${selection.providerName}-${selection.index}`}
         providerName={selection.providerName}
         provider={provider}
         model={model}
+        savedModel={savedModel}
         onChange={(m) => updateModel(selection.providerName, selection.index, m)}
         onDelete={() => removeModel(selection.providerName, selection.index)}
       />
@@ -2172,7 +2253,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null, onOpenMcp 
 
               {/* Divider before custom providers, only when there are active managed providers */}
               {(activeOAuth.length > 0 || activeApiKey.length > 0) && providers.length > 0 && (
-                <div style={{ margin: "4px 8px", borderTop: "1px solid var(--border)" }} />
+                <div style={{ margin: "4px 8px", borderTop: "var(--hairline) solid var(--border)" }} />
               )}
 
               {/* Custom providers */}
@@ -2181,6 +2262,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null, onOpenMcp 
               ) : providers.map(([pName, pData]) => {
                 const isProviderSelected = selection?.type === "provider" && selection.name === pName;
                 const models = pData.models ?? [];
+                const overriddenIds = new Set(listModelOverrides(pData.modelOverrides).map((entry) => entry.modelId));
                 return (
                   <div key={pName} style={{ marginBottom: 2 }}>
                     {/* Provider row */}
@@ -2215,7 +2297,10 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null, onOpenMcp 
                              {m.id || t("i18n.newModel")}
                           </ConfigSidebarText>
                           {m.reasoning && (
-                            <span style={{ fontSize: 9, padding: "1px 4px", background: "rgba(99,102,241,0.12)", color: "rgba(99,102,241,0.8)", borderRadius: 3, flexShrink: 0 }}>T</span>
+                            <span style={{ fontSize: 10, padding: "1px 4px", background: "rgba(99,102,241,0.12)", color: "rgba(99,102,241,0.8)", borderRadius: 3, flexShrink: 0 }}>T</span>
+                          )}
+                          {overriddenIds.has(m.id.trim()) && (
+                            <span className="models-sidebar-override-badge" title={t("models.overrideBadgeTitle")}>{t("models.overrideBadge")}</span>
                           )}
                         </ConfigSidebarItem>
                       );
@@ -2234,7 +2319,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null, onOpenMcp 
               {/* Classifier and image models never reach the model selector; this is where they show. */}
               {!loading && (
                 <>
-                  <div style={{ margin: "4px 8px", borderTop: "1px solid var(--border)" }} />
+                  <div style={{ margin: "4px 8px", borderTop: "var(--hairline) solid var(--border)" }} />
                   <ConfigSidebarItem
                     active={selection?.type === "nonchat"}
                     onClick={() => setSelection({ type: "nonchat" })}

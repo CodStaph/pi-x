@@ -8,7 +8,7 @@ const jiti = createJiti(import.meta.url, {
   jsx: { runtime: "automatic" },
   tsconfigPaths: true,
 });
-const { applySkillToggleResults, skillsToSwitch } = await jiti.import("./SkillsConfig.tsx");
+const { applySkillToggleResults, skillsToSwitch } = await jiti.import("./SkillsConfig");
 
 const skills = [
   { name: "a", filePath: "/skills/a/SKILL.md", disableModelInvocation: false },

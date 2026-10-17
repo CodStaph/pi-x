@@ -15,7 +15,7 @@ const {
   getTokenEstimateText,
   getToolCallInputText,
   replaceUserMessageText,
-} = await jiti.import("./MessageView.tsx");
+} = await jiti.import("./MessageView");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
 const { splitFinalAssistantBlocks } = await jiti.import("@/lib/message-display");
 
@@ -203,6 +203,20 @@ test("renders a provider error when the assistant message has no content", () =>
   assert.match(html, /role="alert"/);
   assert.match(html, /Error: OpenAI API error \(403\)/);
   assert.match(html, /&lt;html&gt;request forbidden&lt;\/html&gt;/);
+});
+
+test("skips null and undefined content blocks instead of crashing", () => {
+  // Reproduces the "Cannot read properties of undefined (reading 'type')"
+  // boundary crash: a sparse content array whose hole was materialized into an
+  // explicit `undefined` block.
+  const html = renderMessage({
+    role: "assistant",
+    provider: "anthropic",
+    model: "claude-test",
+    content: [undefined, null, { type: "text", text: "recovered answer" }],
+  });
+
+  assert.match(html, /recovered answer/);
 });
 
 test("renders a truncation notice for stopReason length", () => {
@@ -537,7 +551,7 @@ test("expands a codemode call into its script, its calls, and the output without
   assert.match(text, /bash\{"path":"file-23"\}1\.5s/);
   assert.match(text, /exit code 2/);
   assert.match(html, /aria-label="Failed"/);
-  assert.match(text, /Model calls: \$0\.01/);
+  assert.match(text, /Model calls: [^0-9]*0[.,]01/);
   assert.match(text, /Script error:\nError: exit code 2/);
   assert.doesNotMatch(text, /Wall time/);
   assert.doesNotMatch(text, /"code":/);

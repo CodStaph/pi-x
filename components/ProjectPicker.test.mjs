@@ -6,7 +6,7 @@ const jiti = createJiti(import.meta.url, {
   jsx: { runtime: "automatic" },
   tsconfigPaths: true,
 });
-const { selectVisibleProjects, shouldShowProjectFilter } = await jiti.import("./ProjectPicker.tsx");
+const { selectVisibleProjects, shouldShowProjectFilter } = await jiti.import("./ProjectPicker");
 
 const many = Array.from({ length: 12 }, (_, i) => `/work/project-${i}`);
 

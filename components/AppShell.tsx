@@ -1,4 +1,5 @@
 "use client";
+import type { UnavailableWorkspace, WorkspaceAvailability } from "@/lib/workspace-availability";
 
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
@@ -6,9 +7,13 @@ import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useNativeAppMenu } from "@/hooks/useNativeAppMenu";
+import { useMenuRequest } from "@/hooks/useMenuRequest";
+import { canUseNativeMenu, showNativeMenu } from "@/lib/desktop-menu";
+import { DomContextMenuHost } from "./DomContextMenuHost";
 import { selectProjectDirectoryNative } from "./ProjectPicker";
 import { SessionSidebar } from "./SessionSidebar";
 import { ChatWindow } from "./ChatWindow";
+import { useScheduledRunNotifications } from "@/hooks/useScheduledRunNotifications";
 import type { ChatScrollPosition } from "@/lib/chat-scroll-position";
 import { clearDraft } from "@/lib/draft-store";
 import { TabBar, type Tab } from "./TabBar";
@@ -18,15 +23,20 @@ import { TabBar, type Tab } from "./TabBar";
 // syntax highlighting a second time and only matters once a file tab opens.
 const FileViewer = dynamic(() => import("./FileViewer").then((m) => m.FileViewer), { ssr: false });
 const FileExplorer = dynamic(() => import("./FileExplorer").then((m) => m.FileExplorer), { ssr: false });
+// Only mounted once opened; xterm alone is a large share of the page bundle.
+const TerminalPanel = dynamic(() => import("./TerminalPanel").then((m) => m.TerminalPanel), { ssr: false });
+const ScheduledView = dynamic(() => import("./scheduled/ScheduledView").then((m) => m.ScheduledView), { ssr: false });
 import { openFileTab, saveFileViewerState } from "./file-tab-state";
 import { SETTINGS_SECTION_ITEMS, SettingsPanel, SettingsSectionIcon } from "./SettingsPanel";
 import { ProjectTrustDialog, type ProjectTrustFailure } from "./ProjectTrustDialog";
 import { BranchNavigator, hasSessionBranches } from "./BranchNavigator";
 import { UpdateReminder } from "./UpdateReminder";
 import { useTheme } from "@/hooks/useTheme";
+import { useAppBackground } from "@/hooks/useAppBackground";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
-import { APP_PREF_KEYS, getPrefBool, getPrefJson, setPref, setPrefJson } from "@/lib/app-prefs";
+import { APP_PREF_KEYS, getPref, getPrefBool, getPrefJson, setPref, setPrefJson } from "@/lib/app-prefs";
+import type { TerminalShellProfile } from "@/lib/terminal-shells";
 import { useViewportHeight } from "@/hooks/useViewportHeight";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { useDesktopConnection } from "@/lib/desktop-connection";
@@ -44,10 +54,14 @@ import { WindowControls, useDesktopChrome, useWindowDrag } from "./desktop";
 import { SystemPromptPanel } from "./SystemPromptPanel";
 import { ToolDefinitionsPanel } from "./ToolDefinitionsPanel";
 import { AgentSessionPanel } from "./AgentSessionPanel";
-import { TerminalPanel } from "./TerminalPanel";
+import { BrowserPanel } from "./BrowserPanel";
 import { newTerminalTab, restoreTerminalTabs, TERMINAL_TABS_KEY, type TerminalTab } from "./terminal-tab-state";
+import { artifactPanelTab, artifactTabId, artifactTabsForSession, upsertArtifactTab, type ArtifactTab } from "./artifact-tabs";
+import { ArtifactPanel } from "./ArtifactPanel";
+import { setArtifactOpener, useArtifactTitles } from "@/lib/artifact-store";
 import { useAudio } from "@/hooks/useAudio";
 import { copyText } from "@/lib/clipboard";
+import { useCostCurrency } from "@/hooks/useCostCurrency";
 import { sendAgentCommand } from "@/lib/agent-client";
 import {
   claimExtensionAttentionNotification,
@@ -88,7 +102,7 @@ import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { FileViewerState } from "@/lib/file-viewer-state";
 import type { ToolEntry } from "@/lib/tool-presets";
 import { getSessionFamily } from "@/lib/session-family";
-import { type SettingsSection } from "@/lib/settings-navigation";
+import { getLastSettingsSection, type SettingsSection } from "@/lib/settings-navigation";
 
 type SessionCopyField = "file" | "id" | "projectDir" | "gitBranch" | "gitWorktree";
 type AutoNameStatus =
@@ -101,6 +115,12 @@ const AGENT_PANEL_WIDTH = 420;
 const FILE_TREE_MIN_WIDTH = 220;
 const FILE_TREE_MAX_WIDTH = 520;
 const FILE_TREE_PREVIEW_MIN_WIDTH = 240;
+// Below this panel width the tree steps aside while a file or terminal is
+// shown: the viewer's toolbar (path, mode switch, actions) needs ~320px, and a
+// 220px tree beside it left the preview clipped.
+const FILE_TREE_AUTO_COLLAPSE_WIDTH = FILE_TREE_MIN_WIDTH + 320;
+/** Panel tab id for the embedded browser (a normal right-panel page view). */
+const BROWSER_TAB_ID = "browser";
 
 function parkedNewSessionDraftKey(cwd: string): string {
   return `parked-new:${cwd}`;
@@ -121,6 +141,12 @@ export function AppShell() {
   // into the desktop config while the settings dialog is closed. The sidebar's
   // sun/moon toggle was removed — theme selection lives in Settings → General.
   useTheme();
+  // Subscribed for its side effects only: keeps the root element's background
+  // image variables in sync with the settings store while the dialog is closed.
+  useAppBackground();
+  // Cost display currency follows the interface language (or an explicit
+  // choice) and converts through the last fetched USD→CNY rate.
+  const { formatCost: formatCurrencyCost } = useCostCurrency();
   const { locale, t: translate } = useI18n();
   const isMobile = useIsMobile();
   useViewportHeight();
@@ -151,9 +177,30 @@ export function AppShell() {
     if (soundEnabledRef.current) playDoneSound();
   }, [playDoneSound, soundEnabledRef]);
   const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
+  // The Scheduled page covers the chat area without unmounting it, so the open session keeps its state.
+  const [scheduledOpen, setScheduledOpen] = useState(() => searchParams?.get("view") === "scheduled");
+  const scheduledOpenRef = useRef(scheduledOpen);
+  useEffect(() => { scheduledOpenRef.current = scheduledOpen; }, [scheduledOpen]);
   const [explorerUploadBusy, setExplorerUploadBusy] = useState(false);
   const fileExplorerRef = useRef<FileExplorerHandle>(null);
-  const [fileTreeOpen, setFileTreeOpen] = useState(true);
+  // The panel is a preview surface; keep the file index hidden until asked for.
+  const [fileTreeOpen, setFileTreeOpen] = useState(false);
+  // Measured width of the panel body; drives the narrow-panel auto-collapse.
+  const [panelBodyWidth, setPanelBodyWidth] = useState(0);
+  const panelBodyObserverRef = useRef<ResizeObserver | null>(null);
+  const panelBodyRef = useCallback((node: HTMLDivElement | null) => {
+    panelBodyObserverRef.current?.disconnect();
+    panelBodyObserverRef.current = null;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      setPanelBodyWidth(Math.round(entry.contentRect.width));
+    });
+    observer.observe(node);
+    panelBodyObserverRef.current = observer;
+  }, []);
+  // The user reopened the tree while the panel is narrow; cleared whenever the
+  // panel crosses the threshold, so widening and narrowing again re-collapses.
+  const [fileTreeNarrowOverride, setFileTreeNarrowOverride] = useState(false);
   const [fileExplorerQuery, setFileExplorerQuery] = useState("");
   const [changesCount, setChangesCount] = useState(0);
   const [changesCollapsed, setChangesCollapsed] = useState(true);
@@ -217,22 +264,6 @@ export function AppShell() {
     setSettingsMenuOpen(false);
     setSettingsMenuPos(null);
   }, []);
-  const toggleSettingsMenu = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
-    if (settingsMenuOpen) {
-      closeSettingsMenu();
-      return;
-    }
-    const rect = event.currentTarget.getBoundingClientRect();
-    const menuWidth = 184;
-    const menuHeight = 236;
-    const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
-    const below = rect.bottom + 6;
-    const top = below + menuHeight > window.innerHeight - 8
-      ? Math.max(8, rect.top - menuHeight - 6)
-      : below;
-    setSettingsMenuPos({ top, left });
-    setSettingsMenuOpen(true);
-  }, [settingsMenuOpen, closeSettingsMenu]);
   useEffect(() => {
     if (!settingsMenuOpen) return;
     const handleMouseDown = (event: MouseEvent) => {
@@ -253,6 +284,9 @@ export function AppShell() {
     };
   }, [settingsMenuOpen, closeSettingsMenu]);
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
+  const [workspaceStatus, setWorkspaceStatus] = useState<{ cwd: string; availability: WorkspaceAvailability | "unknown" } | null>(null);
+  const workspaceStatusRef = useRef(workspaceStatus);
+  const [workspaceStatusCheck, setWorkspaceStatusCheck] = useState(0);
   const [topMoreOpen, setTopMoreOpen] = useState(false);
   const topMoreRef = useRef<HTMLDivElement>(null);
   const topMoreMenuRef = useRef<HTMLDivElement>(null);
@@ -262,6 +296,8 @@ export function AppShell() {
   const [projectTrustBusy, setProjectTrustBusy] = useState(false);
   const [projectTrustError, setProjectTrustError] = useState<ProjectTrustFailure | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => !initialNavigation.sidebarCollapsed);
+  // Desktop open state, remembered across the mobile drawer (which starts closed).
+  const desktopSidebarOpenRef = useRef(!initialNavigation.sidebarCollapsed);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [rightPanelExpanded, setRightPanelExpanded] = useState(false);
   const rightPanelFullWidth = rightPanelOpen && rightPanelExpanded && !isMobile;
@@ -269,6 +305,10 @@ export function AppShell() {
     if (!rightPanelOpen || isMobile) setRightPanelExpanded(false);
   }, [rightPanelOpen, isMobile]);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
+  // The embedded browser is a normal right-panel tab (kind: "browser"), not a
+  // separate column, so it shares the file/terminal page-view surface.
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [browserUrl, setBrowserUrl] = useState("");
   // The desktop window has no native title bar. macOS keeps its traffic lights
   // and only needs the top bar inset for them; other platforms get the buttons
   // from <WindowControls />, which renders nothing in a browser build.
@@ -326,6 +366,9 @@ export function AppShell() {
     storageKey: "pi-right-panel-width",
     widthRef: rightPanelWidthRef,
   });
+  // The file tree is a column beside the viewer/terminal, so its extent is a
+  // width budget: keep the pane beside it at least FILE_TREE_PREVIEW_MIN_WIDTH
+  // wide. On the compact overlay the panel width is whatever the drawer gets.
   const getFileTreeMaxWidth = useCallback(
     () => {
       const availablePanelWidth = typeof window === "undefined"
@@ -350,7 +393,8 @@ export function AppShell() {
     cssVariable: "--file-tree-width",
     defaultWidth: FILE_TREE_DEFAULT_WIDTH,
     getMaxWidth: getFileTreeMaxWidth,
-    growthDirection: "left",
+    // The tree sits at the panel's left edge (CSS order), so it grows rightward.
+    growthDirection: "right",
     maxWidth: FILE_TREE_MAX_WIDTH,
     minWidth: FILE_TREE_MIN_WIDTH,
     storageKey: "pi-file-tree-width",
@@ -363,7 +407,7 @@ export function AppShell() {
   // On mobile the sidebar is an overlay drawer; hide it by default so the chat
   // is visible on load. Runs once the breakpoint resolves after hydration.
   useEffect(() => {
-    if (isMobile) setSidebarOpen(false);
+    setSidebarOpen(isMobile ? false : desktopSidebarOpenRef.current);
   }, [isMobile]);
   // Close right panel when viewport is too narrow for split-panel layout.
   // Uses matchMedia's change event (not just the rightPanelOpen dependency)
@@ -373,7 +417,6 @@ export function AppShell() {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const mql = window.matchMedia(`(max-width: ${SPLIT_PANEL_MIN_WIDTH - 1}px)`);
     const checkWidth = () => {
-      setWideSplitLayout(!mql.matches);
       if (mql.matches) setRightPanelOpen(false);
     };
     checkWidth();
@@ -389,9 +432,15 @@ export function AppShell() {
     reclampRightPanelWidth();
     reclampFileTreeWidth();
   }, [reclampFileTreeWidth, reclampRightPanelWidth, reclampSidebarWidth, rightPanelOpen, rightPanelWidth]);
+  // PC-only: closing on mobile also keeps the browser tab from coming back when
+  // the viewport grows again without the user asking for it.
+  useEffect(() => {
+    if (isMobile) setBrowserOpen(false);
+  }, [isMobile]);
   const chatInputRef = useRef<ChatInputHandle | null>(null);
   const [pendingQuotePrompt, setPendingQuotePrompt] = useState<{ sessionId: string; text: string } | null>(null);
   const topBarRef = useRef<HTMLDivElement>(null);
+  const topPanelRef = useRef<HTMLDivElement>(null);
   // Branch navigator state — populated by ChatWindow via onBranchDataChange
   const [branchTree, setBranchTree] = useState<SessionTreeNode[]>([]);
   const [branchActiveLeafId, setBranchActiveLeafId] = useState<string | null>(null);
@@ -458,8 +507,6 @@ export function AppShell() {
   // Single active panel — only one dropdown open at a time
   const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "session" | null>(null);
   const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
-  // Viewport is wide enough for the file panel to split the row (not overlay)
-  const [wideSplitLayout, setWideSplitLayout] = useState(false);
 
   useEffect(() => {
     if (!sessionHasBranches) {
@@ -534,7 +581,11 @@ export function AppShell() {
 
   const handleSidebarToggle = useCallback(() => {
     if (isMobile) setActiveTopPanel(null);
-    setSidebarOpen((open) => !open);
+    setSidebarOpen((open) => {
+      const next = !open;
+      if (!isMobile) desktopSidebarOpenRef.current = next;
+      return next;
+    });
   }, [isMobile]);
 
   const handleRightPanelToggle = useCallback(() => {
@@ -543,7 +594,19 @@ export function AppShell() {
       setActiveTopPanel(null);
     }
     setTopMoreOpen(false);
-    setRightPanelOpen((open) => !open);
+    setRightPanelOpen((open) => {
+      if (open) setRightPanelExpanded(false);
+      return !open;
+    });
+  }, [isMobile]);
+
+  // The panel is a preview layer; the composer remains the home base. The
+  // overlay and the backslash shortcut both use this same exit.
+  const handleRightPanelClose = useCallback(() => {
+    if (isMobile) setActiveTopPanel(null);
+    setTopMoreOpen(false);
+    setRightPanelOpen(false);
+    chatInputRef.current?.focus();
   }, [isMobile]);
 
   const handleRightPanelExpandToggle = useCallback(() => {
@@ -595,9 +658,10 @@ export function AppShell() {
     if (!activeTopPanel) return;
 
     const handlePointerDown = (event: MouseEvent) => {
-      // Panel DOM lives under topBarRef (fixed-position child); treat the whole
-      // top bar — including toggle buttons — as inside so toggles stay reliable.
-      if (!topBarRef.current?.contains(event.target as Node)) setActiveTopPanel(null);
+      // Panel DOM is portaled to <body>; include both the top bar and the
+      // panel itself so interacting with the panel does not dismiss it.
+      if (!topBarRef.current?.contains(event.target as Node)
+        && !topPanelRef.current?.contains(event.target as Node)) setActiveTopPanel(null);
     };
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !isImeComposing(event)) setActiveTopPanel(null);
@@ -615,16 +679,11 @@ export function AppShell() {
     if (!activeTopPanel || !topBarRef.current) return;
     const update = () => {
       const topBarRect = topBarRef.current!.getBoundingClientRect();
-      // The dropdowns are fixed children of the top bar's stacking context
-      // (z-index 90), so the wide-desktop file panel paints over them — keep
-      // them clear of that column. The top bar itself already starts at the
-      // sidebar's right edge (the sidebar is a full-height column of the
-      // shell), so its rect is already the sidebar-cleared region; reserving
-      // the sidebar width again here shifted the dropdown a second time and
-      // left a sidebar-wide dead band on its left.
-      const panelReserved = rightPanelOpen && !isMobile && wideSplitLayout ? rightPanelWidth : 0;
+      // The top bar spans exactly the center column: the sidebar and the
+      // file panel are full-height siblings of the main column, so its rect is
+      // already clear of both and the dropdowns can use it as-is.
       const left = topBarRect.left;
-      const available = Math.max(0, topBarRect.width - panelReserved);
+      const available = topBarRect.width;
       if (activeTopPanel === "agents") {
         setTopPanelPos({
           top: topBarRect.bottom,
@@ -639,20 +698,38 @@ export function AppShell() {
     const ro = new ResizeObserver(update);
     ro.observe(topBarRef.current);
     return () => ro.disconnect();
-  }, [activeTopPanel, isMobile, rightPanelOpen, rightPanelWidth, wideSplitLayout]);
+  }, [activeTopPanel]);
 
   // Files unmount when inactive; workspace terminals stay mounted until closed.
   const [fileTabs, setFileTabs] = useState<Tab[]>([]);
   const [activeFileTabId, setActiveFileTabId] = useState<string | null>(null);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
+  const [artifactTabs, setArtifactTabs] = useState<ArtifactTab[]>([]);
+  // artifactPanelTab reads each tab's newest title; this re-renders when one changes.
+  useArtifactTitles(artifactTabs);
   const [terminalsRestored, setTerminalsRestored] = useState(false);
-  const panelTabs: Tab[] = [...fileTabs, ...terminalTabs.map((tab) => ({
-    id: tab.id,
-    label: getFileName(tab.cwd) || tab.cwd,
-    filePath: tab.cwd,
-    kind: "terminal" as const,
-    closing: Boolean(tab.closing),
-  }))];
+  const [terminalShells, setTerminalShells] = useState<TerminalShellProfile[]>([]);
+  // "auto" lets the server pick the most Linux-like shell available (WSL, then
+  // Git Bash, then cmd on Windows; the login shell on POSIX).
+  const [terminalShellDefault, setTerminalShellDefault] = useState("auto");
+  const panelTabs: Tab[] = [
+    ...fileTabs,
+    ...terminalTabs.map((tab) => ({
+      id: tab.id,
+      label: getFileName(tab.cwd) || tab.cwd,
+      filePath: tab.cwd,
+      kind: "terminal" as const,
+      closing: Boolean(tab.closing),
+    })),
+    ...(browserOpen ? [{
+      id: BROWSER_TAB_ID,
+      label: translate("browserCard.title"),
+      filePath: browserUrl || "about:blank",
+      kind: "browser" as const,
+    }] : []),
+    ...artifactTabs.map(artifactPanelTab),
+  ];
+  const activeArtifactTab = artifactTabs.find((tab) => tab.id === activeFileTabId) ?? null;
 
   useEffect(() => {
     try {
@@ -664,6 +741,16 @@ export function AppShell() {
       }
     } catch { /* storage is optional */ }
     setTerminalsRestored(true);
+    const storedShell = getPref(APP_PREF_KEYS.terminalShell);
+    if (storedShell) setTerminalShellDefault(storedShell);
+    let cancelled = false;
+    fetch("/api/terminal/shells")
+      .then((response) => response.json())
+      .then((data: { shells?: TerminalShellProfile[] }) => {
+        if (!cancelled && Array.isArray(data?.shells)) setTerminalShells(data.shells);
+      })
+      .catch(() => { /* picker falls back to the tab's own shell */ });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -934,6 +1021,7 @@ export function AppShell() {
   }, [activeCwd, activeFileTabId, invalidateWorkspaceRestore, newSessionCwd, router, selectedSession, restoreWorkspaceContext]);
 
   const handleSelectSession = useCallback((session: SessionInfo, isRestore = false, entryId?: string, blockIndex?: number) => {
+    if (!isRestore) setScheduledOpen(false);
     setSearchTarget(entryId ? { sessionId: session.id, entryId, blockIndex } : null);
     invalidateWorkspaceRestore();
     const activeDraftKey = activeNewSessionDraftKeyRef.current;
@@ -992,12 +1080,15 @@ export function AppShell() {
     // replace in production Next.js triggers a Suspense remount loop.
     // Tab-memory restore lands on `/` and must write `?session=` so reload
     // and copy-link keep this session.
-    if (!isRestore || new URLSearchParams(window.location.search).get("session") !== session.id) {
+    if (isRestore && scheduledOpenRef.current) {
+      // Keep the Scheduled view in place when restoring the session behind it.
+    } else if (!isRestore || new URLSearchParams(window.location.search).get("session") !== session.id) {
       router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
     }
   }, [activeCwd, activeFileTabId, invalidateWorkspaceRestore, router, isMobile, newSessionCwd, selectedSession]);
 
   const handleNewSession = useCallback((sessionId: string, cwd: string) => {
+    setScheduledOpen(false);
     invalidateWorkspaceRestore();
     // "New task" is an explicit reset. A cwd-based blank-task draft would
     // otherwise be reloaded immediately when the composer remounts (legacy
@@ -1071,9 +1162,21 @@ export function AppShell() {
   useNativeAppMenu(handleNativeMenuAction);
 
   // Global keyboard shortcuts (handles Esc, Ctrl+Alt+N etc.)
+  const openSettingsAtLastSection = useCallback(() => {
+    closeSettingsMenu();
+    setActiveTopPanel(null);
+    setTopMoreOpen(false);
+    // A project-only section without a project falls back to General (SettingsPanel re-checks).
+    setSettingsSection(getLastSettingsSection(selectedSession?.cwd ?? newSessionCwd ?? activeCwd));
+  }, [activeCwd, closeSettingsMenu, newSessionCwd, selectedSession]);
+
   useGlobalKeyboardShortcuts({
     onNewSession: (cwd: string) => handleNewSession(`kb-${Date.now()}`, cwd),
     activeCwd,
+    // Already open: leave it where it is.
+    onOpenSettings: settingsSection ? undefined : openSettingsAtLastSection,
+    // Only while open: a closed panel must leave \ and focus alone.
+    onCloseRightPanel: rightPanelOpen ? handleRightPanelClose : undefined,
   });
 
   // Client-built transient SessionInfo (new session / fork) lacks the
@@ -1113,7 +1216,20 @@ export function AppShell() {
     }
   }, [handleSelectSession, sessionCatalog]);
 
-  // Called by ChatWindow when a new session gets its real id from pi
+  const handleOpenScheduled = useCallback(() => {
+    setScheduledOpen(true);
+    if (isMobile) setSidebarOpen(false);
+    if (new URLSearchParams(window.location.search).get("view") !== "scheduled") {
+      router.replace("?view=scheduled", { scroll: false });
+    }
+  }, [isMobile, router]);
+
+  const handleBrowseScheduledFolder = useCallback(
+    () => selectProjectDirectoryNative(selectedSession?.cwd ?? newSessionCwd ?? activeCwd, ""),
+    [selectedSession?.cwd, newSessionCwd, activeCwd],
+  );
+
+
   const handleSessionCreated = useCallback((session: SessionInfo, sourceDraftKey: string) => {
     setRefreshKey((k) => k + 1);
     if (activeNewSessionDraftKeyRef.current !== sourceDraftKey) return;
@@ -1180,6 +1296,24 @@ export function AppShell() {
       tag: targetSession ? `pi-session-complete:${targetSession.id}` : "pi-session-complete",
     });
   }, [deliverSessionNotification, hydrateSelectedSession, selectedSession, translate]);
+
+  // Scheduled runs have their own notification (success or failure, which task, why).
+  useScheduledRunNotifications({
+    onSound: handleBackgroundTaskDone,
+    deliverInBrowser: (notification) => {
+      if (!shouldShowBrowserNotification()) return;
+      void (async () => {
+        const { sessionId } = notification;
+        let targetSession: SessionInfo | null = sessionId ? sessionCatalog.find((s) => s.id === sessionId) ?? null : null;
+        if (!targetSession && sessionId) {
+          const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { cache: "no-store" }).catch(() => null);
+          const data = response?.ok ? await response.json().catch(() => null) as { info?: SessionInfo } | null : null;
+          targetSession = data?.info ?? null;
+        }
+        deliverSessionNotification({ targetSession, title: notification.title, body: notification.body, tag: notification.tag });
+      })();
+    },
+  });
 
   const handleAttentionNeeded = useCallback((request: BlockingExtensionUiRequest) => {
     if (selectedSession?.relation?.kind === "subagent") return;
@@ -1324,38 +1458,103 @@ export function AppShell() {
   }, [handleOpenFile, selectedSession?.id]);
 
   const handleOpenTerminal = useCallback((cwd: string) => {
-    const existing = terminalTabs.find((tab) => tab.cwd === cwd);
-    const tab = existing ?? newTerminalTab(cwd);
+    const existing = terminalTabs.find((tab) => tab.cwd === cwd && (tab.shell ?? "auto") === terminalShellDefault);
+    const tab = existing ?? newTerminalTab(cwd, terminalShellDefault);
     if (!existing) setTerminalTabs((tabs) => [...tabs, tab]);
     setActiveFileTabId(tab.id);
     setRightPanelOpen(true);
     if (isMobile) setSidebarOpen(false);
-  }, [terminalTabs, isMobile]);
+  }, [terminalTabs, isMobile, terminalShellDefault]);
+
+  // Changing the shell restarts the tab with the new profile (a pty's shell is
+  // fixed at spawn). `handleTerminalClosed` carries it into the replacement.
+  const handleTerminalShellChange = useCallback((tab: TerminalTab, shell: string) => {
+    setTerminalTabs((tabs) => tabs.map((item) => item.id === tab.id && !item.closing ? { ...item, shell, closing: "restart" } : item));
+  }, []);
+
+  const handleSetTerminalShellDefault = useCallback((shell: string) => {
+    setTerminalShellDefault(shell);
+    setPref(APP_PREF_KEYS.terminalShell, shell);
+  }, []);
+
+  useEffect(() => setArtifactOpener((request) => {
+    if (request.auto && isMobile) return;
+    setArtifactTabs((tabs) => upsertArtifactTab(tabs, request, Date.now()));
+    setActiveFileTabId(artifactTabId(request.sessionId, request.identifier));
+    if (request.reveal !== false) setRightPanelOpen(true);
+  }), [isMobile]);
+
+  const selectedSessionId = selectedSession?.id ?? null;
+  // Read by the effect below without re-running it on every tab change.
+  const panelTabsRef = useRef({ fileTabs, terminalTabs });
+  useEffect(() => {
+    panelTabsRef.current = { fileTabs, terminalTabs };
+  });
+  // Tabs from the conversation being left cannot ask for fixes and go stale
+  // once the store forgets its session, so switching conversations closes them.
+  useEffect(() => {
+    setArtifactTabs((tabs) => artifactTabsForSession(tabs, selectedSessionId));
+    setActiveFileTabId((current) => (
+      current?.startsWith("artifact:") && !current.startsWith(`artifact:${selectedSessionId}:`)
+        ? panelTabsRef.current.fileTabs.at(-1)?.id ?? panelTabsRef.current.terminalTabs.at(-1)?.id ?? null
+        : current
+    ));
+  }, [selectedSessionId]);
 
   const handleTerminalClosed = (tab: TerminalTab) => {
-    const replacement = tab.closing === "restart" ? newTerminalTab(tab.cwd) : null;
+    const replacement = tab.closing === "restart" ? newTerminalTab(tab.cwd, tab.shell) : null;
     const remaining = terminalTabs.filter((item) => item.id !== tab.id);
     setTerminalTabs((tabs) => tabs.flatMap((item) => item.id !== tab.id ? [item] : replacement ? [replacement] : []));
-    setActiveFileTabId((current) => current !== tab.id ? current : replacement?.id ?? remaining.at(-1)?.id ?? fileTabs.at(-1)?.id ?? null);
-    if (!replacement && !remaining.length && !fileTabs.length) setRightPanelOpen(false);
+    setActiveFileTabId((current) => current !== tab.id ? current : replacement?.id ?? remaining.at(-1)?.id ?? fileTabs.at(-1)?.id ?? (browserOpen ? BROWSER_TAB_ID : null));
+    if (!replacement && !remaining.length && !fileTabs.length && !browserOpen && !artifactTabs.length) setRightPanelOpen(false);
   };
 
   const handleCloseFileTab = useCallback((tabId: string) => {
+    if (artifactTabs.some((tab) => tab.id === tabId)) {
+      const remaining = artifactTabs.filter((tab) => tab.id !== tabId);
+      setArtifactTabs(remaining);
+      setActiveFileTabId((cur) => cur !== tabId ? cur : remaining.at(-1)?.id ?? fileTabs.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? null);
+      if (!remaining.length && !fileTabs.length && !terminalTabs.length && !browserOpen) setRightPanelOpen(false);
+      return;
+    }
+    if (tabId === BROWSER_TAB_ID) {
+      setBrowserOpen(false);
+      setActiveFileTabId((cur) => cur !== BROWSER_TAB_ID ? cur : terminalTabs.at(-1)?.id ?? fileTabs.at(-1)?.id ?? null);
+      if (terminalTabs.length === 0 && fileTabs.length === 0 && artifactTabs.length === 0) setRightPanelOpen(false);
+      return;
+    }
     if (terminalTabs.some((tab) => tab.id === tabId)) {
       setTerminalTabs((tabs) => tabs.map((tab) => tab.id === tabId && !tab.closing ? { ...tab, closing: "close" } : tab));
       return;
     }
     setFileTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId);
-      if (next.length === 0 && terminalTabs.length === 0) setRightPanelOpen(false);
+      if (next.length === 0 && terminalTabs.length === 0 && !browserOpen && artifactTabs.length === 0) setRightPanelOpen(false);
       return next;
     });
     setActiveFileTabId((cur) => {
       if (cur !== tabId) return cur;
       const remaining = fileTabs.filter((t) => t.id !== tabId);
-      return remaining.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? null;
+      return remaining.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? artifactTabs.at(-1)?.id ?? (browserOpen ? BROWSER_TAB_ID : null);
     });
-  }, [fileTabs, terminalTabs]);
+  }, [artifactTabs, browserOpen, fileTabs, terminalTabs]);
+
+  // The browser is a right-panel page view, so opening it focuses its tab and
+  // the topbar globe toggles it like the file-panel button.
+  const handleOpenBrowser = useCallback(() => {
+    setBrowserOpen(true);
+    setActiveFileTabId(BROWSER_TAB_ID);
+    setRightPanelOpen(true);
+    if (isMobile) setSidebarOpen(false);
+  }, [isMobile]);
+
+  const handleToggleBrowser = useCallback(() => {
+    if (browserOpen && activeFileTabId === BROWSER_TAB_ID && rightPanelOpen) {
+      handleCloseFileTab(BROWSER_TAB_ID);
+      return;
+    }
+    handleOpenBrowser();
+  }, [activeFileTabId, browserOpen, handleCloseFileTab, handleOpenBrowser, rightPanelOpen]);
 
   const handleViewFullHistory = useCallback(() => {
     if (!selectedSession) return;
@@ -1382,6 +1581,23 @@ export function AppShell() {
   }, [newSessionDraftKey]);
   const showChat = selectedSession !== null || effectiveNewSessionCwd !== null;
   const projectTrustCwd = selectedSession?.cwd ?? effectiveNewSessionCwd;
+  const beginSettingsMenuRequest = useMenuRequest(projectTrustCwd);
+  const toggleSettingsMenu = useCallback(async (event: React.MouseEvent<HTMLButtonElement>) => {
+    const isCurrent = beginSettingsMenuRequest();
+    if (settingsMenuOpen) { closeSettingsMenu(); return; }
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (canUseNativeMenu() && await showNativeMenu(SETTINGS_SECTION_ITEMS.map((item) => ({
+      label: translate(item.labelKey),
+      disabled: Boolean(item.requiresProject && !projectTrustCwd),
+      onSelect: () => { if (!isCurrent()) return; closeSettingsMenu(); setSettingsSection(item.id); },
+    })), { x: rect.left, y: rect.bottom + 2 })) return;
+    if (!isCurrent()) return;
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - 184 - 8));
+    const below = rect.bottom + 6;
+    const top = below + 236 > window.innerHeight - 8 ? Math.max(8, rect.top - 236 - 6) : below;
+    setSettingsMenuPos({ top, left });
+    setSettingsMenuOpen(true);
+  }, [settingsMenuOpen, closeSettingsMenu, projectTrustCwd, translate, beginSettingsMenuRequest]);
   // While restoring initial session from URL, don't show the placeholder
   const showPlaceholder = initialSessionRestored && !showChat;
 
@@ -1457,11 +1673,48 @@ export function AppShell() {
     rightPanelOpen,
   ]);
 
+  // Check the folder before cwd-scoped requests, so deleted projects do not look like model errors.
+  useEffect(() => {
+    if (!projectTrustCwd) return;
+    const cwd = projectTrustCwd;
+    const controller = new AbortController();
+    fetch(`/api/cwd/status?cwd=${encodeURIComponent(cwd)}`, { signal: controller.signal })
+      .then(async (response) => {
+        const data = await response.json() as { availability?: WorkspaceAvailability };
+        return response.ok && data.availability ? data.availability : "unknown" as const;
+      })
+      .catch((error) => (error instanceof DOMException && error.name === "AbortError" ? null : "unknown" as const))
+      .then((availability) => {
+        if (!availability || controller.signal.aborted) return;
+        const previous = workspaceStatusRef.current;
+        const recovered = availability === "available"
+          && previous?.cwd === cwd
+          && previous.availability !== "available"
+          && previous.availability !== "unknown";
+        workspaceStatusRef.current = { cwd, availability };
+        setWorkspaceStatus({ cwd, availability });
+        if (recovered) setModelsRefreshKey((key) => key + 1);
+      });
+    return () => controller.abort();
+  }, [projectTrustCwd, workspaceStatusCheck]);
+
+  const workspaceAvailability = projectTrustCwd && workspaceStatus?.cwd === projectTrustCwd
+    ? workspaceStatus.availability
+    : null;
+  const unavailableWorkspace = useMemo<UnavailableWorkspace | null>(() => (
+    projectTrustCwd && workspaceAvailability && workspaceAvailability !== "available" && workspaceAvailability !== "unknown"
+      ? { cwd: projectTrustCwd, availability: workspaceAvailability }
+      : null
+  ), [projectTrustCwd, workspaceAvailability]);
+  const recheckWorkspace = useCallback(() => setWorkspaceStatusCheck((check) => check + 1), []);
+
   useEffect(() => {
     setProjectTrust(null);
     setProjectTrustDialogOpen(false);
     setProjectTrustError(null);
     if (!projectTrustCwd) return;
+    if (workspaceAvailability === null) return;
+    if (workspaceAvailability !== "available" && workspaceAvailability !== "unknown") return;
 
     const controller = new AbortController();
     // The answer also lists the project's MCP servers (`mcpFile`, `mcpServers`), unused here: the
@@ -1479,7 +1732,7 @@ export function AppShell() {
         console.error("Failed to load project trust:", error);
       });
     return () => controller.abort();
-  }, [projectTrustCwd]);
+  }, [projectTrustCwd, workspaceAvailability]);
 
   const handleTrustProject = useCallback(async () => {
     if (!projectTrustCwd || projectTrustBusy) return;
@@ -1522,14 +1775,37 @@ export function AppShell() {
   }, [projectTrustCwd]);
 
   const activeFileTab = fileTabs.find((tab) => tab.id === activeFileTabId) ?? null;
+  // A narrow panel collapses the tree only while something is being viewed;
+  // with nothing open the tree is the panel's whole content. The preference
+  // (fileTreeOpen) is untouched, so a wider panel brings the tree back.
+  const fileTreeNarrow = panelBodyWidth > 0 && panelBodyWidth < FILE_TREE_AUTO_COLLAPSE_WIDTH;
+  const [fileTreeNarrowSeen, setFileTreeNarrowSeen] = useState(fileTreeNarrow);
+  if (fileTreeNarrowSeen !== fileTreeNarrow) {
+    setFileTreeNarrowSeen(fileTreeNarrow);
+    setFileTreeNarrowOverride(false);
+  }
+  const panelHasViewer = Boolean(activeFileTabId && panelTabs.some((tab) => tab.id === activeFileTabId));
+  const fileTreeAutoCollapsed = fileTreeNarrow && panelHasViewer && !fileTreeNarrowOverride;
+  const fileTreeShown = fileTreeOpen && !fileTreeAutoCollapsed;
+  const handleFileTreeToggle = () => {
+    if (fileTreeShown) {
+      setFileTreeOpen(false);
+      setFileTreeNarrowOverride(false);
+    } else {
+      setFileTreeOpen(true);
+      if (fileTreeAutoCollapsed) setFileTreeNarrowOverride(true);
+    }
+  };
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
   const windowTitle = activeCwdName ? `${activeCwdName} - ${PRODUCT_NAME}` : PRODUCT_NAME;
-  const topBarTitle = selectedSession
-    ? selectedSession.name || selectedSession.firstMessage || translate("appshell.untitledTask")
-    : showChat
-      ? translate("appshell.newTask")
-      : PRODUCT_NAME;
-  const topBarSubtitle = activeCwdName ?? translate("appshell.subtitle");
+  const topBarTitle = scheduledOpen
+    ? translate("scheduled.title")
+    : selectedSession
+      ? selectedSession.name || selectedSession.firstMessage || translate("appshell.untitledTask")
+      : showChat
+        ? translate("appshell.newTask")
+        : PRODUCT_NAME;
+  const topBarSubtitle = scheduledOpen ? "" : activeCwdName ?? translate("appshell.subtitle");
 
   useEffect(() => {
     const syncWindowTitle = () => {
@@ -1589,6 +1865,8 @@ export function AppShell() {
         onProjectsChange={handleProjectsChange}
         headerControls={sidebarHeaderControls}
         onOpenTerminal={handleOpenTerminal}
+        onOpenScheduled={handleOpenScheduled}
+        scheduledOpen={scheduledOpen}
         onBackgroundTaskDone={handleBackgroundTaskDone}
         onRunningSessionIdsChange={handleRunningSessionIdsChange}
         onSessionsChange={handleSessionsChange}
@@ -1661,6 +1939,26 @@ export function AppShell() {
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="15" y1="3" x2="15" y2="21" />
+        </svg>
+      </button>
+    );
+  };
+
+  const renderBrowserToggle = () => {
+    const browserActive = browserOpen && activeFileTabId === BROWSER_TAB_ID && rightPanelOpen;
+    return (
+      <button
+        type="button"
+        className={`main-file-toggle browser-toggle${browserActive ? " is-open" : ""}`}
+        onClick={handleToggleBrowser}
+        aria-controls="file-panel"
+        aria-expanded={browserActive}
+        title={browserActive ? translate("browserCard.hide") : translate("browserCard.show")}
+        aria-label={browserActive ? translate("browserCard.hide") : translate("browserCard.show")}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M3 12h18M12 3c2.2 2.4 3.3 5.4 3.3 9s-1.1 6.6-3.3 9c-2.2-2.4-3.3-5.4-3.3-9S9.8 5.4 12 3Z" />
         </svg>
       </button>
     );
@@ -1743,7 +2041,7 @@ export function AppShell() {
             flexShrink: 0,
             padding: "7px 12px",
             background: "color-mix(in srgb, var(--danger) 14%, var(--bg-panel))",
-            borderBottom: "1px solid color-mix(in srgb, var(--danger) 35%, var(--border))",
+            borderBottom: "var(--hairline) solid color-mix(in srgb, var(--danger) 35%, var(--border))",
             color: "var(--text)",
             fontSize: 12,
             zIndex: 300,
@@ -1756,7 +2054,7 @@ export function AppShell() {
             style={{
               height: 24,
               padding: "0 10px",
-              border: "1px solid var(--border)",
+              border: "var(--hairline) solid var(--border)",
               borderRadius: 5,
               background: "var(--bg)",
               color: "var(--accent)",
@@ -1794,7 +2092,7 @@ export function AppShell() {
         style={{
           "--sidebar-width": `${sidebarResizer.width}px`,
           background: "var(--bg-panel)",
-          borderRight: "1px solid var(--border)",
+          borderRight: "var(--hairline) solid var(--border)",
           display: "flex",
           flexDirection: "column",
           flexShrink: 0,
@@ -1818,7 +2116,7 @@ export function AppShell() {
 
       {/* Main column: everything right of the sidebar. The topbar starts at the
           center column so the sidebar runs the full window height. */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, overflow: "hidden" }}>
+      <div className="app-main-column" style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, overflow: "hidden" }}>
         {/* Top bar with sidebar toggle */}
         <div
           ref={topBarRef}
@@ -1946,7 +2244,6 @@ export function AppShell() {
                 open={activeTopPanel === "branches"}
                 onToggle={() => toggleTopPanel("branches")}
                 hasSession
-                reserveRight={rightPanelOpen && !isMobile && wideSplitLayout ? rightPanelWidth : 0}
               />
               {(() => {
                 // Persisted stats win so compressed sessions can still name
@@ -2125,7 +2422,7 @@ export function AppShell() {
                           const parts: string[] = [];
                           if (t && t.input > 0) parts.push(`↑${fmt(t.input)}`);
                           if (t && t.output > 0) parts.push(`↓${fmt(t.output)}`);
-                          if (c > 0) parts.push(c >= 0.01 ? `$${c.toFixed(2)}` : "<$0.01");
+                          if (c > 0) parts.push(c >= 0.01 ? formatCurrencyCost(c, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : `<${formatCurrencyCost(0.01, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
                           if (contextUsage?.contextWindow && contextUsage.percent !== null) {
                             parts.push(`${contextUsage.percent.toFixed(1)}% ctx`);
                           }
@@ -2164,6 +2461,7 @@ export function AppShell() {
             </div>
           )}
           {!isMobile && renderProjectTrustWarning(false)}
+          {!isMobile && renderBrowserToggle()}
           {!isMobile && renderMainFileToggle()}
           {isMobile && sessionHasBranches && (
             <BranchNavigator
@@ -2181,16 +2479,19 @@ export function AppShell() {
             />
           )}
           {/* Top panel dropdown — shared, only one active at a time */}
-          {activeTopPanel && topPanelPos && (
-            <div style={{
-              position: "fixed",
-              top: topPanelPos.top,
-              left: topPanelPos.left,
-              width: topPanelPos.width,
-              maxHeight: `calc(100dvh - ${topPanelPos.top}px)`,
-              overflowY: "auto",
-              zIndex: 500,
-            }}>
+          {activeTopPanel && topPanelPos && createPortal(
+            <div
+              ref={topPanelRef}
+              style={{
+                position: "fixed",
+                top: topPanelPos.top,
+                left: topPanelPos.left,
+                width: topPanelPos.width,
+                maxHeight: `calc(100dvh - ${topPanelPos.top}px)`,
+                overflowY: "auto",
+                zIndex: 500,
+              }}
+            >
               {activeTopPanel === "agents" && activeSessionFamily && selectedSession && (
                 <AgentSessionPanel
                   rootSession={activeSessionFamily.root}
@@ -2217,7 +2518,7 @@ export function AppShell() {
               {activeTopPanel === "session" && (
                 <div className="session-info-popover" style={{
                   background: "var(--bg-panel)",
-                  borderBottom: "1px solid var(--border)",
+                  borderBottom: "var(--hairline) solid var(--border)",
                   boxShadow: "0 10px 28px rgba(0,0,0,0.10)",
                   padding: "12px 16px",
                 }}>
@@ -2262,7 +2563,7 @@ export function AppShell() {
                     const ctx = contextUsage ?? sessionStats.contextUsage;
                     const formatCompact = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(0)}k` : String(n);
                     const extraTokenRows = [
-                       ...(sessionStats.cost > 0 ? [[translate("session.cost"), `$${sessionStats.cost.toFixed(4)}`]] : []),
+                       ...(sessionStats.cost > 0 ? [[translate("session.cost"), formatCurrencyCost(sessionStats.cost)]] : []),
                        ...(ctx?.contextWindow ? [[translate("session.context"), `${ctx.percent !== null ? `${ctx.percent.toFixed(1)}%` : "?"} / ${formatCompact(ctx.contextWindow)}`]] : []),
                        // Cache hit rate = cache reads / (input + cache writes + cache reads) — the denominator covers all input-class tokens.
                        ...(sessionStats.tokens.cacheRead + sessionStats.tokens.cacheWrite > 0 && sessionStats.tokens.cacheRead + sessionStats.tokens.cacheWrite + sessionStats.tokens.input > 0
@@ -2323,7 +2624,7 @@ export function AppShell() {
                             marginTop: -2,
                             color: copied ? "var(--accent)" : "var(--text-dim)",
                             background: "transparent",
-                            border: "1px solid var(--border)",
+                            border: "var(--hairline) solid var(--border)",
                             borderRadius: 4,
                             cursor: "pointer",
                             flex: "0 0 auto",
@@ -2356,11 +2657,11 @@ export function AppShell() {
                     const costBreakdownRows = shouldShowUsageBreakdown(sessionStats.costBreakdown, sessionStats.selectedModelKey)
                       ? (sessionStats.costBreakdown ?? []).map((entry) => [
                           entry.key === UNATTRIBUTED_USAGE_KEY ? translate("session.unattributedUsage") : entry.key,
-                          `$${entry.cost.toFixed(4)} · ${formatCompact(entry.tokens)}`,
+                          `${formatCurrencyCost(entry.cost)} · ${formatCompact(entry.tokens)}`,
                         ])
                       : [];
                     const cacheWarmingInfo = panelCacheWarming ?? sessionStats.cacheWarming;
-                    const cacheWarmingSectionRows = cacheWarmingInfo ? cacheWarmingRows(cacheWarmingInfo, translate) : [];
+                    const cacheWarmingSectionRows = cacheWarmingInfo ? cacheWarmingRows(cacheWarmingInfo, translate, Date.now(), formatCurrencyCost) : [];
                     const sessionInfoSection = (
                       <div style={{ minWidth: 0 }}>
                          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text)", marginBottom: 6 }}>{translate("session.infoSection")}</div>
@@ -2433,18 +2734,22 @@ export function AppShell() {
                   )}
                 </div>
               )}
-            </div>
+            </div>,
+            document.body,
           )}
 
-          <WindowControls />
+          {(!rightPanelOpen || isMobile) && <WindowControls />}
         </div>
         <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
       {/* Center: chat */}
       <div inert={rightPanelFullWidth} style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+        {/* Chat column — the embedded browser lives in the right panel's tab
+            strip, so the centre area is chat only. */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         {isMobile && renderProjectTrustWarning(true)}
 
         {/* Chat content */}
-        <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+        <div inert={scheduledOpen} aria-hidden={scheduledOpen || undefined} style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           {showChat ? (
             <ChatWindow
               key={sessionKey}
@@ -2461,6 +2766,8 @@ export function AppShell() {
               onSessionCreated={handleSessionCreated}
               onSessionForked={handleSessionForked}
               modelsRefreshKey={modelsRefreshKey}
+              workspaceUnavailable={unavailableWorkspace}
+              onRecheckWorkspace={recheckWorkspace}
               chatInputRef={chatInputRef}
               onBranchDataChange={handleBranchDataChange}
               onSystemPromptChange={handleSystemPromptChange}
@@ -2481,7 +2788,6 @@ export function AppShell() {
               initialPrompt={pendingQuotePrompt?.sessionId === selectedSession?.id ? pendingQuotePrompt?.text : undefined}
               onInitialPromptConsumed={() => setPendingQuotePrompt(null)}
               soundEnabled={soundEnabled}
-              onSoundToggle={onSoundToggle}
               playDoneSound={playDoneSound}
               unlockAudio={unlockAudio}
             />
@@ -2526,6 +2832,25 @@ export function AppShell() {
               </div>
             )
           ) : null}
+        {scheduledOpen && (
+          <ScheduledView
+            projectRoots={availableProjectRoots}
+            defaultCwd={selectedSession?.cwd ?? newSessionCwd ?? activeCwd}
+            onBrowseFolder={desktopMode ? handleBrowseScheduledFolder : undefined}
+            onOpenSession={async (sessionId) => {
+              const known = sessionCatalog.some((s) => s.id === sessionId && !s.transient);
+              if (!known) {
+                const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { cache: "no-store" }).catch(() => null);
+                if (!response?.ok) return false;
+              }
+              await handleOpenSession(sessionId);
+              return true;
+            }}
+          />
+        )}
+        </div>
+      </div>
+      </div>
         </div>
       </div>
 
@@ -2553,7 +2878,7 @@ export function AppShell() {
       <div
         aria-hidden="true"
         className={`right-panel-overlay-backdrop${rightPanelOpen ? " is-open" : ""}`}
-        onClick={() => setRightPanelOpen(false)}
+        onClick={handleRightPanelClose}
       />
       {rightPanelOpen && (
         <div
@@ -2562,7 +2887,7 @@ export function AppShell() {
           aria-controls="file-panel"
           className={`panel-resize-handle right-panel-resize-handle${rightPanelResizer.isResizing ? " is-resizing" : ""}`}
           data-resize-handle="right-panel"
-          title={`${translate("layout.resizeFilePanel")}: ${translate("layout.resizeHint")}`}
+          title={`${translate("layout.resizeFilePanel")}: ${translate("layout.resizeHint")} · ${translate("files.closePanelHint")}`}
         />
       )}
 
@@ -2575,7 +2900,7 @@ export function AppShell() {
           "--right-panel-width": `${rightPanelResizer.width}px`,
           display: "flex",
           flexDirection: "column",
-          borderLeft: "1px solid var(--border)",
+          borderLeft: "var(--hairline) solid var(--separator)",
           background: "var(--bg)",
         } as React.CSSProperties}
       >
@@ -2624,7 +2949,11 @@ export function AppShell() {
             <span>{translate("contextPanel.tabDiff")}</span>
           </button>
         */}
-        <div className="right-panel-tab-strip">
+        <div
+          className="right-panel-tab-strip"
+          {...desktopChrome.dragRegionProps}
+          {...windowDrag}
+        >
           <div className="file-tab-bar-slot">
             <TabBar
               tabs={panelTabs}
@@ -2637,11 +2966,11 @@ export function AppShell() {
           {activeCwd && (
             <button
               type="button"
-              className={`file-workbench-icon-button${fileTreeOpen ? " is-active" : ""}`}
-              onClick={() => setFileTreeOpen((open) => !open)}
-              title={translate(fileTreeOpen ? "contextPanel.hideFileList" : "contextPanel.showFileList")}
-              aria-label={translate(fileTreeOpen ? "contextPanel.hideFileList" : "contextPanel.showFileList")}
-              aria-pressed={fileTreeOpen}
+              className={`file-workbench-icon-button file-tree-toggle${fileTreeShown ? " is-active" : ""}`}
+              onClick={handleFileTreeToggle}
+              title={translate(fileTreeShown ? "contextPanel.hideFileList" : "contextPanel.showFileList")}
+              aria-label={translate(fileTreeShown ? "contextPanel.hideFileList" : "contextPanel.showFileList")}
+              aria-pressed={fileTreeShown}
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M15 7v10" />
@@ -2663,32 +2992,36 @@ export function AppShell() {
                 : "M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M3 3l6 6m12-6-6 6M3 21l6-6m12 6-6-6"} />
             </svg>
           </button>
-          {/* Closing from the panel itself is only reachable here: the full-width
-              panel paints over the topbar (z 100 vs 90), and on mobile the fixed
-              floating toggle sits under the panel (z 120 vs 250). In the
-              desktop split layout the topbar toggle covers this, so the chip
-              stays out of the way instead of duplicating it. */}
-          {(isMobile || rightPanelFullWidth) && (
-            <button
-              type="button"
-              className="file-workbench-icon-button"
-              onClick={() => setRightPanelOpen(false)}
-              aria-controls="file-panel"
-              aria-expanded={rightPanelOpen}
-              title={translate("files.hidePanel")}
-              aria-label={translate("files.hidePanel")}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="15" y1="3" x2="15" y2="21" />
-              </svg>
-            </button>
-          )}
+          {/* Close from the panel's own header, like Claude Desktop's side
+              panel. The topbar toggle stays as the way back in. */}
+          <button
+            type="button"
+            className="file-workbench-icon-button right-panel-close-button"
+            onClick={() => setRightPanelOpen(false)}
+            aria-controls="file-panel"
+            aria-expanded={rightPanelOpen}
+            title={translate("files.hidePanel")}
+            aria-label={translate("files.hidePanel")}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+          {rightPanelOpen && !isMobile && <WindowControls />}
         </div>
 
         {/* Only the active viewer is mounted. Lightweight per-tab state is restored on activation. */}
-        <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden", paddingBottom: "env(safe-area-inset-bottom)" }}>
+        <div ref={panelBodyRef} className="right-panel-body" style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden", paddingBottom: "env(safe-area-inset-bottom)" }}>
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {activeFileTab?.filePath ? (
+          {activeArtifactTab ? (
+            <ArtifactPanel
+              key={activeArtifactTab.id}
+              sessionId={activeArtifactTab.sessionId}
+              identifier={activeArtifactTab.identifier}
+              title={activeArtifactTab.title}
+              versionRequest={activeArtifactTab.versionRequest}
+            />
+          ) : activeFileTab?.filePath ? (
             <FileViewer
               key={`${activeFileTab.id}:${activeFileTab.viewerRevision ?? 0}`}
               filePath={activeFileTab.filePath}
@@ -2712,9 +3045,15 @@ export function AppShell() {
                 { sourceSessionId: activeFileTab.sourceSessionId, page },
               )}
             />
-          ) : !terminalTabs.some((tab) => tab.id === activeFileTabId) ? (
-            <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
-               {translate("files.noneOpen")}
+          ) : !terminalTabs.some((tab) => tab.id === activeFileTabId) && activeFileTabId !== BROWSER_TAB_ID ? (
+            <div className="right-panel-empty">
+              <span>{translate("files.noneOpen")}</span>
+              {/* The file list starts hidden; offer it where the panel is empty. */}
+              {activeCwd && !fileTreeShown && (
+                <button type="button" className="right-panel-empty-action" onClick={handleFileTreeToggle}>
+                  {translate("contextPanel.showFileList")}
+                </button>
+              )}
             </div>
           ) : null}
           {terminalTabs.map((tab) => (
@@ -2722,29 +3061,42 @@ export function AppShell() {
               <TerminalPanel
                 tab={tab}
                 active={rightPanelOpen && tab.id === activeFileTabId}
+                shells={terminalShells}
+                defaultShell={terminalShellDefault}
+                onShellChange={handleTerminalShellChange}
+                onSetDefaultShell={handleSetTerminalShellDefault}
                 onRestart={() => setTerminalTabs((tabs) => tabs.map((item) => item.id === tab.id ? { ...item, closing: "restart" } : item))}
                 onClosed={() => handleTerminalClosed(tab)}
                 onCloseError={() => setTerminalTabs((tabs) => tabs.map((item) => item.id === tab.id ? { ...item, closing: undefined } : item))}
               />
             </div>
           ))}
+          {browserOpen && (
+            // The flex column is what lets .context-browser-panel's flex:1
+            // (and the iframe's) fill the pane; a plain block wrapper left the
+            // iframe at its intrinsic height, so resizing the pane did nothing.
+            <div hidden={activeFileTabId !== BROWSER_TAB_ID} style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+              <BrowserPanel initialUrl={browserUrl} onUrlChange={setBrowserUrl} />
+            </div>
+          )}
         </div>
       
         {/* Explorer column — always-on project file tree */}
-          {activeCwd && fileTreeOpen && (
+          {activeCwd && fileTreeShown && (
             <>
               <div
                 {...fileTreeResizer.separatorProps}
                 aria-controls="file-tree-panel"
                 className={`panel-resize-handle file-tree-resize-handle${fileTreeResizer.isResizing ? " is-resizing" : ""}`}
                 data-resize-handle="file-tree"
+                style={{ order: -1 }}
                 title={`${translate("layout.resizeFileTree")}: ${translate("layout.resizeHint")}`}
               />
               <div
                 ref={fileTreeResizer.panelRef}
                 id="file-tree-panel"
                 className="file-tree-panel"
-                style={{ "--file-tree-width": `${fileTreeResizer.width}px` } as React.CSSProperties}
+                style={{ order: -2, "--file-tree-width": `${fileTreeResizer.width}px` } as React.CSSProperties}
               >
               <div className="context-panel-files-toolbar">
                 <div className="context-panel-file-filter-wrap">
@@ -2804,7 +3156,6 @@ export function AppShell() {
                   ref={fileExplorerRef}
                   cwd={activeCwd}
                   onOpenFile={handleOpenFile}
-                  selectedFilePath={activeFileTab?.filePath ?? null}
                   refreshKey={explorerRefreshKey}
                   onAtMention={handleAtMention}
                   onAtMentions={handleAtMentions}
@@ -2817,8 +3168,6 @@ export function AppShell() {
             </>
           )}
       </div>
-        </div>
-      </div>
       </div>
     </div>
     {settingsSection && (
@@ -2828,6 +3177,8 @@ export function AppShell() {
         initialSection={settingsSection}
         quoteSelectionEnabled={quoteSelectionEnabled}
         onQuoteSelectionChange={handleQuoteSelectionChange}
+        soundEnabled={soundEnabled}
+        onSoundToggle={onSoundToggle}
         onClose={() => {
           setSettingsSection(null);
           setModelsRefreshKey((key) => key + 1);
@@ -2838,6 +3189,7 @@ export function AppShell() {
         onProjectTrustChanged={handleProjectTrustChanged}
       />
     )}
+    <DomContextMenuHost />
     {settingsMenuOpen && settingsMenuPos && createPortal(
       <div
         ref={settingsMenuRef}

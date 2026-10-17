@@ -15,8 +15,8 @@ const jiti = createJiti(import.meta.url, {
   interopDefault: true,
   moduleCache: false,
 });
-const { GET, PUT, PATCH, DELETE } = await jiti.import("./route.ts");
-const { allowFileRoot } = await jiti.import("../../../../lib/file-access.ts");
+const { GET, PUT, PATCH, DELETE } = await jiti.import("./route");
+const { allowFileRoot } = await jiti.import("../../../../lib/file-access");
 
 after(async () => {
   if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

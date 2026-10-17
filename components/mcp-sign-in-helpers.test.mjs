@@ -26,9 +26,9 @@ const {
   mcpSignOutBlock,
   pasteMcpSignIn,
   postMcpSignIn,
-} = await jiti.import("./mcp-sign-in-helpers.ts");
-const { MCP_SIGN_IN_SUMMARY_KEYS, MCP_TEST_SUMMARY_KEYS, mcpTestSummaryKey } = await jiti.import("./mcp-config-helpers.ts");
-const { enLocale } = await jiti.import("@/lib/i18n/messages/en.ts");
+} = await jiti.import("./mcp-sign-in-helpers");
+const { MCP_SIGN_IN_SUMMARY_KEYS, MCP_TEST_SUMMARY_KEYS, mcpTestSummaryKey } = await jiti.import("./mcp-config-helpers");
+const { enLocale } = await jiti.import("@/lib/i18n/messages/en");
 const messages = enLocale.messages;
 const source = await readFile(new URL("./mcp-sign-in-helpers.ts", import.meta.url), "utf8");
 const apiTypesSource = await readFile(new URL("../lib/api-types.ts", import.meta.url), "utf8");

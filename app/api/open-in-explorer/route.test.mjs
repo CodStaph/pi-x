@@ -13,7 +13,7 @@ const jiti = createJiti(import.meta.url, {
   interopDefault: true,
   moduleCache: false,
 });
-const { POST } = await jiti.import("./route.ts");
+const { POST } = await jiti.import("./route");
 
 test.after(() => rm(agentDir, { recursive: true, force: true }));
 

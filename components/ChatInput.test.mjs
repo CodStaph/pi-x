@@ -11,11 +11,11 @@ const jiti = createJiti(import.meta.url, {
 });
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { ChatInput, ModelErrorBanner, ModelScopeWarningBanner, canClearBuiltinCommandInput, canRestoreUserMessage, canRunBuiltinSlashCommandWhileStreaming, compressImageFile, cycleListIndex, filterModelOptions, getTopbarBoundary, getUpwardMenuMaxHeight, getUserMessageText, getUserMessageDraftImages, isExactSlashCommand, modelSupportsImageInput, replaceLinksWithMarkdown, shouldCompressImageFile, offersBuiltinSlashCommandWhileStreaming, submitsSlashCommandOnEnter} = await jiti.import("./ChatInput.tsx");
+const { ChatInput, ModelErrorBanner, WorkspaceUnavailableBanner, ModelScopeWarningBanner, canClearBuiltinCommandInput, canRestoreUserMessage, canRunBuiltinSlashCommandWhileStreaming, compressImageFile, cycleListIndex, filterModelOptions, getTopbarBoundary, getUpwardMenuMaxHeight, getUserMessageText, getUserMessageDraftImages, isExactSlashCommand, modelSupportsImageInput, replaceLinksWithMarkdown, shouldCompressImageFile, offersBuiltinSlashCommandWhileStreaming, submitsSlashCommandOnEnter} = await jiti.import("./ChatInput");
 
-const { isBareMcpCommand } = await jiti.import("@/lib/mcp-command.ts");
-const { ModelSelector } = await jiti.import("./ModelSelector.tsx");
-const { clearDraft, getDraft, mergeRestoredSubmissionDraft, mergeRestoredSubmissionText, rekeyDraft, setDraft } = await jiti.import("@/lib/draft-store.ts");
+const { isBareMcpCommand } = await jiti.import("@/lib/mcp-command");
+const { ModelSelector } = await jiti.import("./ModelSelector");
+const { clearDraft, getDraft, mergeRestoredSubmissionDraft, mergeRestoredSubmissionText, rekeyDraft, setDraft } = await jiti.import("@/lib/draft-store");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
 
 function renderWithI18n(element) {
@@ -652,11 +652,12 @@ function chatInputCallback(name, context) {
 }
 
 test("while a run streams, a bare /mcp opens Settings or is queued as before", async () => {
-  const run = async (value, handled, { mode = "steer", images = [] } = {}) => {
+  const run = async (value, handled, { mode = "steer", images = [], workspaceUnavailable = null } = {}) => {
     const calls = { builtin: [], prompts: [], cleared: 0 };
     const sendQueued = chatInputCallback("sendQueued", {
       value,
       attachedImages: images,
+      workspaceUnavailable,
       onAudioUnlock() {},
       clearInput() { calls.cleared += 1; },
       onBuiltinCommand: async () => ({ handled }),
@@ -684,6 +685,12 @@ test("while a run streams, a bare /mcp opens Settings or is queued as before", a
   assert.deepEqual(await run("/mcp", true, { images: [{}] }), { builtin: [], prompts: [["/mcp", "steer", 1]], cleared: 1 });
   // The composer's own built-ins are unchanged.
   assert.deepEqual(await run("/copy", true), { builtin: ["/copy"], prompts: [], cleared: 0 });
+  for (const mode of ["steer", "followup"]) {
+    const workspaceUnavailable = { cwd: "/gone", availability: "missing" };
+    assert.deepEqual(await run("/mcp", false, { mode, workspaceUnavailable }), { builtin: ["/mcp"], prompts: [], cleared: 0 });
+    assert.deepEqual(await run("/mcp login docs", false, { mode, workspaceUnavailable }), { builtin: [], prompts: [], cleared: 0 });
+    assert.deepEqual(await run("/mcp", false, { mode, workspaceUnavailable, images: [{}] }), { builtin: [], prompts: [], cleared: 0 });
+  }
 });
 
 test("handleSend lets a handled /mcp through while streaming and sends an unowned one when idle", async () => {
@@ -692,6 +699,7 @@ test("handleSend lets a handled /mcp through while streaming and sends an unowne
     const handleSend = chatInputCallback("handleSend", {
       value,
       attachedImages: [],
+      workspaceUnavailable: null,
       onAudioUnlock() {},
       isStreaming,
       offersBuiltinSlashCommandWhileStreaming,
@@ -929,12 +937,12 @@ test("handleSend sends exactly once and routes builtin commands through the pend
     compilerOptions: { target: ts.ScriptTarget.ES2020 },
   }).outputText);
 
-  function run({ value = "hello", attachedImages = [], builtinHandled = false, resolved = null }) {
+  function run({ value = "hello", attachedImages = [], builtinHandled = false, resolved = null, workspaceUnavailable = null }) {
     let sends = 0;
     let cleared = 0;
     let builtinCalls = 0;
     const handler = script.runInNewContext({
-      value, attachedImages, isStreaming: false,
+      value, attachedImages, isStreaming: false, workspaceUnavailable,
       onAudioUnlock() {},
       runBuiltinCommand: async () => {
         builtinCalls += 1;
@@ -966,6 +974,43 @@ test("handleSend sends exactly once and routes builtin commands through the pend
   assert.equal(builtin.cleared, 0);
   const passthrough = await run({ value: "/unknown", builtinHandled: false });
   assert.equal(passthrough.sends, 1);
+
+  for (const availability of ["missing", "not-directory", "unreadable"]) {
+    const workspaceUnavailable = { cwd: "/gone", availability };
+    for (const attachedImages of [[], [{ data: "image", mimeType: "image/png" }]]) {
+      const blocked = await run({ value: attachedImages.length ? "" : "hello", attachedImages, workspaceUnavailable });
+      assert.equal(blocked.sends, 0);
+      assert.equal(blocked.cleared, 0);
+    }
+    const local = await run({ value: "/copy", builtinHandled: true, workspaceUnavailable });
+    assert.equal(local.builtinCalls, 1);
+    assert.equal(local.sends, 0);
+  }
+});
+
+test("unavailable workspaces show their reason and keep the draft visible with Send disabled", () => {
+  assert.equal(renderWithI18n(React.createElement(WorkspaceUnavailableBanner)), "");
+  const draftKey = "new:/tmp/workspace-unavailable";
+  setDraft(draftKey, { value: "keep this draft", images: [] });
+  try {
+    for (const [availability, detail] of [["missing", "no longer exists"], ["not-directory", "no longer a folder"], ["unreadable", "cannot be read"]]) {
+      const html = renderWithI18n(React.createElement(ChatInput, {
+        onSend() {}, onAbort() {}, isStreaming: false, draftKey,
+        workspaceUnavailable: { cwd: "/gone", availability },
+        onRecheckWorkspace() {}, modelError: "Directory does not exist",
+      }));
+      assert.match(html, /role="alert"/);
+      assert.ok(html.includes(detail));
+      assert.match(html, /Check again/);
+      assert.match(html, /keep this draft/);
+      assert.doesNotMatch(html, /Model error|Directory does not exist/);
+      // Send is icon-only, so the label sits in its attributes rather than its text.
+      assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="Send"/);
+      assert.equal(getDraft(draftKey).value, "keep this draft");
+    }
+  } finally {
+    clearDraft(draftKey);
+  }
 });
 test("only the chat composer offers saving a default model or reasoning level", () => {
   const chatInputSource = readFileSync(new URL("./ChatInput.tsx", import.meta.url), "utf8");
@@ -978,7 +1023,7 @@ test("only the chat composer offers saving a default model or reasoning level", 
 });
 
 test("selector rows keep the default star and the floating save button in one gutter", async () => {
-  const { SelectorRow } = await jiti.import("./SelectorRow.tsx");
+  const { SelectorRow } = await jiti.import("./SelectorRow");
   const star = (isDefault) => ({ isDefault, saveLabel: "Save as default", defaultLabel: "Default", onSave: () => {} });
   const row = (props) => renderToStaticMarkup(React.createElement(SelectorRow, {
     active: false,

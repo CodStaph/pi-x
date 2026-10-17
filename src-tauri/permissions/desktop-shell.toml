@@ -1,4 +1,9 @@
 [[permission]]
+identifier = "allow-show-popup-menu"
+description = "Allows displaying Rust-owned popup menus."
+commands.allow = ["show_popup_menu"]
+
+[[permission]]
 identifier = "allow-open-external-url"
 description = "Allows opening http/https/mailto URLs in the system default handler."
 commands.allow = ["open_external_url"]
@@ -12,6 +17,16 @@ commands.allow = ["open_path"]
 identifier = "allow-reveal-item-in-dir"
 description = "Allows revealing a local filesystem path in the OS file manager."
 commands.allow = ["reveal_item_in_dir"]
+
+[[permission]]
+identifier = "allow-list-apps-for-file"
+description = "Allows listing the applications that can open a file (macOS Open With)."
+commands.allow = ["list_apps_for_file"]
+
+[[permission]]
+identifier = "allow-open-path-with"
+description = "Allows opening a local filesystem path with a chosen application bundle (macOS Open With)."
+commands.allow = ["open_path_with"]
 
 [[permission]]
 identifier = "allow-set-close-quits"
@@ -32,6 +47,16 @@ commands.allow = ["show_main_window_cmd"]
 identifier = "allow-set-ui-theme"
 description = "Allows the UI to persist light/dark theme for the next cold start."
 commands.allow = ["set_ui_theme"]
+
+[[permission]]
+identifier = "allow-open-log-dir"
+description = "Allows opening the app log directory in the OS file manager."
+commands.allow = ["open_log_dir"]
+
+[[permission]]
+identifier = "allow-clear-app-cache"
+description = "Allows clearing the webview's disk caches from Settings."
+commands.allow = ["clear_app_cache"]
 
 [[permission]]
 identifier = "allow-get-desktop-api-token"

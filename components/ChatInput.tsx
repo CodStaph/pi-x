@@ -1,4 +1,5 @@
 "use client";
+import type { UnavailableWorkspace } from "@/lib/workspace-availability";
 
 import React, { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo, useImperativeHandle, forwardRef, KeyboardEvent } from "react";
 import type { BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages, SlashCommandInfo } from "@/hooks/useAgentSession";
@@ -32,6 +33,8 @@ import { FolderIcon, getFileIcon } from "./FileIcons";
 import { ImagePreview } from "./ImagePreview";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useEnterSendMode } from "@/hooks/useEnterSendMode";
+import { useMenuRequest } from "@/hooks/useMenuRequest";
+import { canUseNativeMenu, showNativeMenu } from "@/lib/desktop-menu";
 import { useI18n } from "@/hooks/useI18n";
 import type { ReactNode } from "react";
 import type { ContextUsage, SessionStatsInfo } from "@/lib/pi-types";
@@ -62,6 +65,8 @@ interface Props {
   modelNames?: Record<string, string>;
   modelList?: { id: string; name: string; provider: string; input?: string[] }[];
   modelError?: string | null;
+  workspaceUnavailable?: UnavailableWorkspace | null;
+  onRecheckWorkspace?: () => void;
   /** Diagnostics from resolving `enabledModels`, e.g. a pattern that matched nothing. */
   modelScopeWarnings?: ModelScopeWarning[];
   /** Dismiss the current scope warnings for this conversation only. */
@@ -117,8 +122,6 @@ interface Props {
   slashCommandsLoading?: boolean;
   onLoadSlashCommands?: () => Promise<SlashCommandInfo[]> | SlashCommandInfo[];
   onBuiltinCommand?: (message: string) => Promise<BuiltinSlashCommandResult>;
-  soundEnabled?: boolean;
-  onSoundToggle?: () => void;
   onAudioUnlock?: () => void;
   draftKey?: string;
   /** Session working directory — enables the @ file autocomplete menu */
@@ -657,6 +660,45 @@ function ModelNoticeBanner({ tone, title, body, action, onClose, dismissLabel }:
   );
 }
 
+export function WorkspaceUnavailableBanner({ workspace, onRecheck }: { workspace?: UnavailableWorkspace | null; onRecheck?: () => void }) {
+  const { t } = useI18n();
+  if (!workspace) return null;
+  const body = workspace.availability === "missing"
+    ? t("chat.workspaceMissing", { cwd: workspace.cwd })
+    : workspace.availability === "not-directory"
+      ? t("chat.workspaceNotDirectory", { cwd: workspace.cwd })
+      : t("chat.workspaceUnreadable", { cwd: workspace.cwd });
+  return (
+    <div data-workspace-unavailable={workspace.availability}>
+      <ModelNoticeBanner
+        tone="error"
+        title={t("chat.workspaceUnavailable")}
+        body={body}
+        action={onRecheck ? (
+          <button
+            type="button"
+            onClick={onRecheck}
+            style={{
+              flexShrink: 0,
+              padding: "2px 8px",
+              border: "var(--hairline) solid rgba(239,68,68,0.45)",
+              borderRadius: 5,
+              background: "transparent",
+              color: "inherit",
+              cursor: "pointer",
+              fontSize: 11,
+              lineHeight: 1.4,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {t("chat.workspaceRecheck")}
+          </button>
+        ) : undefined}
+      />
+    </div>
+  );
+}
+
 export function ModelErrorBanner({ error }: { error?: string | null }) {
   const { t } = useI18n();
   if (!error) return null;
@@ -732,7 +774,7 @@ export function ModelScopeWarningBanner({
 }
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
-  onSend, onAbort, onSteer, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, onDismissModelScopeWarnings, onOpenModelsConfig, onModelChange, modelSwitching,
+  onSend, onAbort, onSteer, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, workspaceUnavailable, onRecheckWorkspace, modelScopeWarnings, onDismissModelScopeWarnings, onOpenModelsConfig, onModelChange, modelSwitching,
   defaultModel, onSetDefaultModel,
   onCompact, onAbortCompaction, isCompacting, compactError, compactNotice, compactResult, summarizationRetry, toolPreset, onToolPresetChange,
   thinkingLevel, isAutoThinkingSelection = false, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
@@ -740,7 +782,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   retryInfo, onAbortRetry, routedModel, branchSummaryPending = false, onAbortBranchSummary, automation, onSetAutomation, queuedMessages, inputHistory = [], onRecallQueue,
   slashCommands, slashCommandsLoading, onLoadSlashCommands,
   onBuiltinCommand,
-  soundEnabled, onSoundToggle, onAudioUnlock,
+  onAudioUnlock,
   onPromptWithStreamingBehavior,
   draftKey,
   cwd,
@@ -794,7 +836,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [value, setValue] = useState(() => (draftKey ? getDraft(draftKey)?.value ?? "" : ""));
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [automationDropdownOpen, setAutomationDropdownOpen] = useState(false);
-  const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
   const [thinkingDropdownOpen, setThinkingDropdownOpen] = useState(false);
   const [controlsMenuOpen, setControlsMenuOpen] = useState(false);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
@@ -834,7 +875,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const projectDropdownRef = useRef<HTMLDivElement>(null);
-  const toolDropdownRef = useRef<HTMLDivElement>(null);
+  const beginProjectMenuRequest = useMenuRequest(projectPath);
   const thinkingDropdownRef = useRef<HTMLDivElement>(null);
   const automationDropdownRef = useRef<HTMLDivElement>(null);
   const controlsMenuRef = useRef<HTMLDivElement>(null);
@@ -1228,10 +1269,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const builtinAllowed = !isStreaming || offersBuiltinSlashCommandWhileStreaming(msg);
     if (builtinAllowed && await runBuiltinCommand(msg)) return;
     if (isStreaming) return;
+    if (workspaceUnavailable) return;
     const resolvedMessage = await resolveSessionReferences(msg, sessionMentionTargetsRef.current);
     onSend(resolvedMessage, attachedImages.length ? attachedImages : undefined);
     clearInput();
-  }, [value, attachedImages, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock]);
+  }, [value, attachedImages, workspaceUnavailable, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock]);
 
   const slashQuery = !compact && value.startsWith("/") && !/\s/.test(value.slice(1))
     ? value.slice(1).toLowerCase()
@@ -1266,7 +1308,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     ? t(slashQuery ? "chat.match" : "chat.command")
     : t(slashQuery ? "chat.matches" : "chat.commands", { count: filteredSlashCommands.length });
   const hasInputText = Boolean(value.trim());
-  const canQueueStreamingMessage = hasInputText || attachedImages.length > 0;
+  const canQueueStreamingMessage = (hasInputText || attachedImages.length > 0) && !workspaceUnavailable;
+  const canSend = canQueueStreamingMessage;
   // Warn when images are attached but the selected model is known not to accept
   // image input (#584), including a resolved default. Unknown models stay silent.
   const showImageUnsupportedWarning = (
@@ -1566,6 +1609,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     onAudioUnlock?.();
     const images = attachedImages.length ? attachedImages : undefined;
     const queue = async () => {
+      if (workspaceUnavailable) return;
       const resolvedMessage = await resolveSessionReferences(msg, sessionMentionTargetsRef.current);
       const streamingBehavior = mode === "steer" ? "steer" : "followUp";
       if (msg.startsWith("/") && onPromptWithStreamingBehavior) {
@@ -1593,7 +1637,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       return;
     }
     void queue();
-  }, [value, attachedImages, onBuiltinCommand, onPromptWithStreamingBehavior, onSteer, onFollowUp, clearInput, onAudioUnlock, runBuiltinCommand]);
+  }, [value, attachedImages, workspaceUnavailable, onBuiltinCommand, onPromptWithStreamingBehavior, onSteer, onFollowUp, clearInput, onAudioUnlock, runBuiltinCommand]);
 
   const getNextSlashIndex = useCallback((direction: "up" | "down" | "left" | "right") => {
     const lastIndex = displayedSlashCommands.length - 1;
@@ -1970,13 +2014,28 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   })();
   const rawToolPresetLabel = Object.entries(TOOL_PRESET_MAP).find(([, v]) => v === (toolPreset ?? "configured"))?.[0] ?? "configured";
   const toolPresetLabel = rawToolPresetLabel === "chat-only" ? t("chat.chatOnly") : rawToolPresetLabel;
+  // One chip for reasoning + tools: the level always, the preset only when it
+  // departs from settings.json ("configured" is the unremarkable default).
+  // The session menu (gear) holds the automation switches once a wrapper
+  // reports them, and manual compaction whenever it can start.
+  const automationKnown = Boolean(onSetAutomation && automation && (automation.autoCompactionEnabled !== null || automation.autoRetryEnabled !== null || automation.steeringMode !== null));
+  const canCompactNow = Boolean(onCompact && !isStreaming && !isCompacting);
+  const runSettingsLabel = [
+    onThinkingLevelChange ? thinkingDisplayLabel : null,
+    onToolPresetChange && (!onThinkingLevelChange || rawToolPresetLabel !== "configured") ? toolPresetLabel : null,
+  ].filter(Boolean).join(" · ");
+  const runSettingsTitle = [
+    onThinkingLevelChange
+      ? (isStreaming
+        ? t("chat.currentReasoning", { level: thinkingDisplayLabel })
+        : t("chat.changeReasoning", { level: thinkingDisplayLabel }))
+      : null,
+    onToolPresetChange ? t("chat.changeToolPreset") + `: ${toolPresetLabel}` : null,
+  ].filter(Boolean).join(" · ");
 
   // Close dropdowns on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (toolDropdownRef.current && !toolDropdownRef.current.contains(e.target as Node)) {
-        setToolDropdownOpen(false);
-      }
       if (thinkingDropdownRef.current && !thinkingDropdownRef.current.contains(e.target as Node)) {
         setThinkingDropdownOpen(false);
       }
@@ -1996,11 +2055,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
-
-  useEffect(() => {
-    if (!isStreaming) return;
-    setToolDropdownOpen(false);
-  }, [isStreaming]);
 
   useEffect(() => {
     if (!isMobile) setControlsMenuOpen(false);
@@ -2038,7 +2092,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }}
       />}
       <div style={{ maxWidth: "var(--chat-content-max-width, 820px)", margin: "0 auto" }}>
-        <ModelErrorBanner error={modelError} />
+        {workspaceUnavailable
+          ? <WorkspaceUnavailableBanner workspace={workspaceUnavailable} onRecheck={onRecheckWorkspace} />
+          : <ModelErrorBanner error={modelError} />}
         <ModelScopeWarningBanner
           warnings={modelScopeWarnings}
           onDismiss={onDismissModelScopeWarnings}
@@ -2060,7 +2116,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         {((queuedMessages?.steering.length ?? 0) + (queuedMessages?.followUp.length ?? 0)) > 0 && (
           <div style={{
             marginBottom: 8,
-            border: "1px solid var(--border)",
+            border: "var(--hairline) solid var(--border)",
             borderRadius: 6,
             background: "var(--bg-panel)",
             padding: "5px 0",
@@ -2093,7 +2149,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     fontSize: 12,
                     color: "var(--text)",
                     background: "transparent",
-                    border: "1px solid var(--border)",
+                    border: "var(--hairline) solid var(--border)",
                     borderRadius: 7,
                     cursor: "pointer",
                     transition: "background 0.12s, border-color 0.12s",
@@ -2128,7 +2184,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         {retryInfo && (
           <div style={{
             marginBottom: 8, padding: "5px 10px",
-            background: "rgba(234,179,8,0.08)", border: "1px solid rgba(234,179,8,0.25)",
+            background: "rgba(234,179,8,0.08)", border: "var(--hairline) solid rgba(234,179,8,0.25)",
             borderRadius: 6, fontSize: 12, color: "rgba(180,130,0,0.9)",
             display: "flex", alignItems: "center", gap: 6,
           }}>
@@ -2151,7 +2207,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         {branchSummaryPending && (
           <div role="status" style={{
             marginBottom: 8, padding: "5px 10px",
-            background: "var(--bg-hover)", border: "1px solid var(--border)",
+            background: "var(--bg-hover)", border: "var(--hairline) solid var(--border)",
             borderRadius: 6, fontSize: 12, color: "var(--text-muted)",
             display: "flex", alignItems: "center", gap: 6,
           }}>
@@ -2176,7 +2232,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         {compactResultText && (
           <div style={{
             marginBottom: 8, padding: "5px 10px",
-            background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.24)",
+            background: "rgba(16,185,129,0.08)", border: "var(--hairline) solid rgba(16,185,129,0.24)",
             borderRadius: 6, fontSize: 12, color: "rgba(5,150,105,0.95)",
             display: "flex", alignItems: "center", gap: 6,
           }}>
@@ -2189,7 +2245,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         {compactNotice && (
           <div role="status" style={{
             marginBottom: 8, padding: "5px 10px",
-            background: "var(--bg-panel)", border: "1px solid var(--border)",
+            background: "var(--bg-panel)", border: "var(--hairline) solid var(--border)",
             borderRadius: 6, fontSize: 12, color: "var(--text-muted)",
             display: "flex", alignItems: "center", gap: 6,
           }}>
@@ -2208,7 +2264,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               marginBottom: 8,
               padding: "7px 10px",
               background: "rgba(239,68,68,0.07)",
-              border: "1px solid rgba(239,68,68,0.3)",
+              border: "var(--hairline) solid rgba(239,68,68,0.3)",
               borderRadius: 6,
               color: "#ef4444",
               fontFamily: "var(--font-mono)",
@@ -2231,7 +2287,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   <img
                     src={img.previewUrl}
                     alt=""
-                    style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)", display: "block" }}
+                    style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 6, border: "var(--hairline) solid var(--border)", display: "block" }}
                   />
                 </ImagePreview>
                 <button
@@ -2240,7 +2296,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   style={{
                     position: "absolute", top: -4, right: -4,
                     width: 16, height: 16, borderRadius: "50%",
-                    background: "var(--bg-panel)", border: "1px solid var(--border)",
+                    background: "var(--bg-panel)", border: "var(--hairline) solid var(--border)",
                     display: "flex", alignItems: "center", justifyContent: "center",
                     cursor: "pointer", padding: 0, color: "var(--text-muted)",
                   }}
@@ -2266,7 +2322,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 bottom: "calc(100% + 8px)",
                 zIndex: 120,
                 background: "var(--bg)",
-                border: "1px solid var(--border)",
+                border: "var(--hairline) solid var(--border)",
                 borderRadius: 8,
                 boxShadow: "0 -6px 20px rgba(0,0,0,0.12)",
                 overflow: "hidden",
@@ -2278,7 +2334,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 style={{
                   height: 30,
                   padding: "0 10px",
-                  borderBottom: "1px solid var(--border)",
+                  borderBottom: "var(--hairline) solid var(--border)",
                   display: "flex",
                   alignItems: "center",
                   color: "var(--text-dim)",
@@ -2327,7 +2383,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                         color: "var(--text)",
                         cursor: "pointer",
                         textAlign: "left",
-                        fontSize: 12.5,
+                        fontSize: 13,
                         lineHeight: 1.45,
                       }}
                     >
@@ -2354,7 +2410,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 bottom: "calc(100% + 8px)",
                 zIndex: 120,
                 background: "var(--bg)",
-                border: "1px solid var(--border)",
+                border: "var(--hairline) solid var(--border)",
                 borderRadius: 8,
                 boxShadow: "0 -6px 20px rgba(0,0,0,0.12)",
                 overflow: "hidden",
@@ -2369,7 +2425,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               <div
                 style={{
                   padding: "8px 10px",
-                  borderBottom: "1px solid var(--border)",
+                  borderBottom: "var(--hairline) solid var(--border)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
@@ -2462,9 +2518,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                                   <span style={{
                                     marginLeft: 6,
                                     padding: "0 4px",
-                                    border: "1px solid var(--border)",
+                                    border: "var(--hairline) solid var(--border)",
                                     borderRadius: 3,
-                                    fontSize: 9,
+                                    fontSize: 10,
                                     color: "var(--text-dim)",
                                     whiteSpace: "nowrap",
                                   }}>
@@ -2506,7 +2562,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   bottom: "calc(100% + 8px)",
                   zIndex: 121,
                   background: "var(--bg)",
-                  border: "1px solid var(--border)",
+                  border: "var(--hairline) solid var(--border)",
                   borderRadius: 8,
                   boxShadow: "0 -6px 20px rgba(0,0,0,0.12)",
                   overflow: "hidden",
@@ -2515,7 +2571,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               >
                 <div style={{
                   padding: "8px 10px",
-                  borderBottom: "1px solid var(--border)",
+                  borderBottom: "var(--hairline) solid var(--border)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
@@ -2558,7 +2614,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                           color: "var(--text)",
                           cursor: "pointer",
                           textAlign: "left",
-                          fontSize: 12.5,
+                          fontSize: 13,
                         }}
                       >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2593,7 +2649,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   bottom: "calc(100% + 8px)",
                   zIndex: 120,
                   background: "var(--bg)",
-                  border: "1px solid var(--border)",
+                  border: "var(--hairline) solid var(--border)",
                   borderRadius: 8,
                   boxShadow: "0 -6px 20px rgba(0,0,0,0.12)",
                   overflow: "hidden",
@@ -2608,7 +2664,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 <div
                   style={{
                     padding: "8px 10px",
-                    borderBottom: "1px solid var(--border)",
+                    borderBottom: "var(--hairline) solid var(--border)",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
@@ -2657,7 +2713,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                             color: "var(--text)",
                             cursor: "pointer",
                             textAlign: "left",
-                            fontSize: 12.5,
+                            fontSize: 13,
                             fontFamily: "var(--font-mono)",
                           }}
                         >
@@ -2677,7 +2733,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </div>
             );
           })()}
-          <div ref={composerRef} className="chat-composer">
+          <div
+            ref={composerRef}
+            className="chat-composer"
+            // Tints the card's hairline (native-theme.css): a shell command, or a
+            // run that will take this message as a steer / follow-up.
+            data-state={compact ? undefined : bashMode ? "bash" : isStreaming && (onSteer || onFollowUp) ? "steer" : undefined}
+          >
           <div
             className="chat-composer-editor"
             style={{
@@ -2687,15 +2749,29 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               gap: 8,
               alignItems: compact ? "stretch" : "center",
               background: "var(--bg)",
-              border: compact ? "none" : `1px solid ${bashMode ? "var(--tool-bg)" : isStreaming && (onSteer || onFollowUp)
-                ? "rgba(234,179,8,0.4)"
-                : "color-mix(in srgb, var(--border) 70%, transparent)"}`,
               borderRadius: compact ? 0 : 14,
               padding: compact ? 0 : isMobile ? "6px 6px 6px 12px" : "10px 10px 10px 14px",
               boxShadow: compact ? "none" : "0 1px 2px rgba(15,23,42,0.04), 0 8px 24px -12px rgba(15,23,42,0.10)",
               transition: "border-color 0.15s, background 0.15s, box-shadow 0.15s",
             } as React.CSSProperties}
           >
+          {/* Attaching is a content action, so it lives in the card with the
+              text it goes with; the row below holds only session context. */}
+          {!compact && (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              title={t("chat.attachImage")}
+              aria-label={t("chat.attachImage")}
+              className="native-toolbar-button composer-attach-button"
+              data-active={attachedImages.length > 0 || undefined}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            </button>
+          )}
           <textarea
             ref={textareaRef}
             className="chat-input-textarea"
@@ -2753,24 +2829,21 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             }}
           />
 
+          {/* The / @ # triggers, kept out of the placeholder: shown faintly
+              beside Send only while the card is focused and empty. */}
+          {!compact && !isNarrow && !isStreaming && value.length === 0 && (
+            <span className="composer-trigger-hint" aria-hidden="true">{t("chat.composerHint")}</span>
+          )}
+
           {isStreaming ? (
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, alignSelf: "flex-end" }}>
               {onSteer && (
                 <button
+                  className="composer-queue-button"
+                  data-kind="steer"
                   onClick={() => sendQueued("steer")}
                   disabled={!canQueueStreamingMessage}
                   title={attachedImages.length ? t("chat.imagesCannotQueue") : t("chat.steerTitle")}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 5,
-                    padding: "7px 12px",
-                    background: canQueueStreamingMessage ? "rgba(234,179,8,0.12)" : "none",
-                    border: "1px solid rgba(234,179,8,0.35)",
-                    borderRadius: 8,
-                    color: canQueueStreamingMessage ? "rgba(180,130,0,1)" : "var(--text-dim)",
-                    cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
-                    fontSize: 13, fontWeight: 600, letterSpacing: "-0.01em",
-                    transition: "background 0.12s",
-                  }}
                 >
                   <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M5 1 L9 5 L5 9" /><line x1="1" y1="5" x2="9" y2="5" />
@@ -2784,17 +2857,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   disabled={!canQueueStreamingMessage}
                   title={attachedImages.length ? t("chat.imagesCannotQueue") : t("chat.followUpTitle")}
                   aria-keyshortcuts="Alt+Enter"
-                  style={{
-                    display: "flex", alignItems: "center", gap: 5,
-                    padding: "7px 12px",
-                    background: canQueueStreamingMessage ? "rgba(129,140,248,0.12)" : "none",
-                    border: "1px solid rgba(129,140,248,0.35)",
-                    borderRadius: 8,
-                    color: canQueueStreamingMessage ? "rgba(99,102,241,1)" : "var(--text-dim)",
-                    cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
-                    fontSize: 13, fontWeight: 600, letterSpacing: "-0.01em",
-                    transition: "background 0.12s",
-                  }}
+                  className="composer-queue-button"
+                  data-kind="followup"
                 >
                   <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="5" y1="1" x2="5" y2="6" /><polyline points="2.5 3.5 5 1 7.5 3.5" />
@@ -2806,41 +2870,30 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             </div>
           ) : (
             <button
-              className="native-primary-button composer-send-button"
+              // The main composer's Send is a round icon whose two states (quiet /
+              // filled) are the "ready to send" signal; the compact quote composer
+              // sits in a dialog, where a labelled button reads better.
+              className={compact ? "native-primary-button" : "composer-send-button"}
               onClick={handleSend}
-              disabled={!value.trim() && !attachedImages.length}
+              disabled={!canSend}
               title={t("chat.send")}
               aria-label={t("chat.send")}
-              style={{
-                flexShrink: 0,
-                alignSelf: "flex-end",
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-                // Mobile: icon-only so the placeholder and draft keep the width.
-                ...(isMobile ? { width: 36, height: 36, padding: 0 } : { padding: "7px 14px" }),
-                background: (value.trim() || attachedImages.length) ? "var(--accent)" : "var(--bg-panel)",
-                border: "none",
-                borderRadius: 8,
-                color: (value.trim() || attachedImages.length) ? "var(--accent-contrast)" : "var(--text-dim)",
-                cursor: (value.trim() || attachedImages.length) ? "pointer" : "not-allowed",
-                fontSize: 13,
-                fontWeight: 600,
-                letterSpacing: "-0.01em",
-                boxShadow: (value.trim() || attachedImages.length) ? "0 1px 3px color-mix(in srgb, var(--accent) 25%, transparent)" : "none",
-                transition: "background 0.15s, box-shadow 0.15s",
-              }}
+              style={{ flexShrink: 0, alignSelf: "flex-end", ...(compact ? { display: "flex", alignItems: "center", gap: 6 } : null) }}
             >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="2" y1="7" x2="11" y2="7" />
-                <polyline points="7.5 3 12 7 7.5 11" />
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <line x1="8" y1="13" x2="8" y2="3.5" />
+                <polyline points="3.5 7.5 8 3 12.5 7.5" />
               </svg>
-              {!isMobile && t("chat.send")}
+              {compact && t("chat.send")}
             </button>
           )}
+          </div>
+          {/* Session controls sit below the input card, not inside it. */}
           </div>
 
         {/* Bash mode status label */}
         {bashMode && (
-          <div className="text-xs px-2 py-1" style={{ color: bashExcluded ? "var(--text-muted)" : "var(--accent)", marginTop: 4 }}>
+          <div className="text-xs px-2 py-1" style={{ color: bashExcluded ? "var(--text-muted)" : "var(--success)", marginTop: 4 }}>
              {t("chat.shell")} · {bashExcluded ? t("chat.outputLocal") : t("chat.outputModel")}
           </div>
         )}
@@ -2849,55 +2902,37 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         {!compact && <div className="chat-composer-controls" style={{
           marginTop: 8,
           display: isNarrow ? "grid" : "flex",
-          gridTemplateColumns: isNarrow ? "minmax(0, 1fr) auto" : undefined,
+          gridTemplateColumns: isNarrow ? "auto minmax(0, 1fr) auto" : undefined,
           alignItems: "center",
           gap: 6,
         }}>
 
           {/* LEFT: project context + model selector (idle) or steer/followup toggle (streaming) */}
 
-            <button
-              onClick={() => fileInputRef.current?.click()}
-             title={t("chat.attachImage")}
-              style={{
-                flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
-                width: 32, height: 32, padding: 0,
-                background: "none", border: "none",
-                borderRadius: 9,
-                color: attachedImages.length ? "var(--accent)" : "var(--text-muted)",
-                cursor: "pointer",
-                opacity: 1,
-                transition: "background 0.12s, color 0.12s",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "var(--bg-hover)";
-                e.currentTarget.style.color = attachedImages.length ? "var(--accent)" : "var(--text)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "none";
-                e.currentTarget.style.color = attachedImages.length ? "var(--accent)" : "var(--text-muted)";
-              }}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                <circle cx="8.5" cy="8.5" r="1.5" />
-                <polyline points="21 15 16 10 5 21" />
-              </svg>
-            </button>
           <div style={{ flex: isNarrow ? "1 1 auto" : "0 0 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2 }}>
             {projectLabel && (
               <div ref={projectDropdownRef} style={{ position: "relative", flexShrink: 0 }}>
                 <button
                   type="button"
                   className="chat-project-context"
-                  style={{ maxWidth: isCompact ? 120 : 170 }}
+                  style={{ maxWidth: isNarrow ? 72 : isCompact ? 120 : 170 }}
                   title={`${t("chat.switchProject")} · ${t("chat.currentProject", { path: projectPath ?? projectLabel })}`}
                   aria-label={t("chat.currentProject", { path: projectPath ?? projectLabel })}
                   aria-haspopup={projectOptions.length > 0 && onProjectChange ? "menu" : undefined}
                   aria-expanded={projectOptions.length > 0 && onProjectChange ? projectDropdownOpen : undefined}
-                  onClick={() => {
-                    if (projectOptions.length > 0 && onProjectChange) setProjectDropdownOpen((open) => !open);
-                    else onSelectProject?.();
+                  onClick={async (event) => {
+                    const isCurrent = beginProjectMenuRequest();
+                    if (projectOptions.length > 0 && onProjectChange) {
+                      if (projectDropdownOpen) { setProjectDropdownOpen(false); return; }
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      if (canUseNativeMenu() && await showNativeMenu(projectOptions.map((projectRoot) => ({
+                        label: getProjectLabel(projectRoot) ?? projectRoot,
+                        checked: projectRoot === projectPath,
+                        onSelect: () => { if (!isCurrent()) return; setProjectDropdownOpen(false); if (projectRoot !== projectPath) return onProjectChange(projectRoot); },
+                      })), { x: rect.left, y: rect.top })) return;
+                      if (!isCurrent()) return;
+                      setProjectDropdownOpen(true);
+                    } else onSelectProject?.();
                   }}
                   disabled={!onSelectProject && !(projectOptions.length > 0 && onProjectChange)}
                 >
@@ -3016,7 +3051,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   display: "flex", alignItems: "center", justifyContent: "center",
                   width: 32, height: 32, marginRight: 6,
                   background: "color-mix(in srgb, var(--danger) 8%, transparent)",
-                  border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
+                  border: "var(--hairline) solid color-mix(in srgb, var(--danger) 30%, transparent)",
                   borderRadius: 9, color: "var(--danger)", cursor: "pointer",
                 }}
               >
@@ -3042,7 +3077,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   justifyContent: "center",
                   width: "100%",
                   height: 32,
-                  padding: "8px 10px",
+                  padding: "0 6px",
                   background: "none",
                   border: "none",
                   borderRadius: 9,
@@ -3050,6 +3085,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   cursor: controlsMenuOpen ? "default" : "pointer",
                   fontSize: 12,
                   fontWeight: 500,
+                  whiteSpace: "nowrap",
                   visibility: controlsMenuOpen ? "hidden" : "visible",
                   pointerEvents: controlsMenuOpen ? "none" : "auto",
                   transition: "background 0.12s, color 0.12s",
@@ -3082,24 +3118,26 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 maxWidth: "calc(100vw - 32px)",
                 flexWrap: "nowrap",
                 justifyContent: "flex-end",
-                border: "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
+                border: "var(--hairline) solid color-mix(in srgb, var(--border) 72%, transparent)",
                 borderRadius: 10,
                 background: "color-mix(in srgb, var(--bg-panel) 92%, var(--bg))",
                 boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
                 backdropFilter: "blur(10px)",
               } : null),
             }}>
-            {onThinkingLevelChange && (
+            {/* Run settings: reasoning level and tool preset share one chip and
+                one menu. Reasoning stays changeable mid-run (#851); the tool
+                section dims while a run is active instead of vanishing. */}
+            {(onThinkingLevelChange || onToolPresetChange) && (
               <div ref={thinkingDropdownRef} style={{ position: "relative" }}>
                 <button
                   className="native-toolbar-button"
                   onClick={() => setThinkingDropdownOpen((v) => !v)}
-                  title={isStreaming
-                    ? t("chat.currentReasoning", { level: thinkingDisplayLabel })
-                    : t("chat.changeReasoning", { level: thinkingDisplayLabel })}
-                  aria-label={t("chat.changeReasoningLabel")}
+                  title={runSettingsTitle}
+                  aria-label={t("chat.runSettings")}
+                  aria-expanded={thinkingDropdownOpen}
                   style={{
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
                     padding: (isCompact && !controlsMenuOpen) ? "0 6px" : "8px 12px",
                     width: (isCompact && !controlsMenuOpen) ? 32 : undefined,
                     height: 32,
@@ -3111,170 +3149,112 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     fontSize: 12,
                     transition: "background 0.12s, color 0.12s",
                   }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                    e.currentTarget.style.color = "var(--text)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = thinkingDropdownOpen ? "var(--bg-hover)" : "none";
-                    e.currentTarget.style.color = "var(--text-muted)";
-                  }}
                 >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M9.5 2A5.5 5.5 0 0 0 4 7.5c0 1.7.78 3.21 2 4.21V14a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-2.29c1.22-1 2-2.51 2-4.21A5.5 5.5 0 0 0 9.5 2z" />
-                    <line x1="7" y1="18" x2="12" y2="18" />
-                    <line x1="8" y1="21" x2="11" y2="21" />
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <line x1="4" y1="7" x2="14" y2="7" /><line x1="18" y1="7" x2="20" y2="7" /><circle cx="16" cy="7" r="2" />
+                    <line x1="4" y1="17" x2="6" y2="17" /><line x1="10" y1="17" x2="20" y2="17" /><circle cx="8" cy="17" r="2" />
                   </svg>
-                  {(!isCompact || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{thinkingDisplayLabel}</span>}
+                  {(!isCompact || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{runSettingsLabel}</span>}
                 </button>
                 {thinkingDropdownOpen && (() => {
                   const vh = typeof window !== "undefined" ? window.visualViewport?.height ?? window.innerHeight : 800;
                   const maxH = Math.max(120, vh * 0.6);
                   return (
-                  <div className="native-popover" style={{
+                  <div className="native-popover composer-run-menu" role="menu" style={{
                     position: "absolute",
                     bottom: "calc(100% + 6px)",
                     ...(isMobile ? { left: 0 } : { right: 0 }),
-                    zIndex: 100, background: "var(--bg)", border: "1px solid var(--border)",
-                    borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
-                    overflow: "hidden", minWidth: 180,
+                    zIndex: 100,
+                    overflow: "hidden", minWidth: 240,
                     maxHeight: maxH, display: "flex", flexDirection: "column",
                   }}>
-                    <div style={{ minHeight: 0, overflowY: "auto" }}>
-                    {THINKING_LEVELS.filter((lvl) => {
-                      if (!availableThinkingLevels) return true;
-                      if (lvl === "auto") return true;
-                      return availableThinkingLevels.includes(lvl);
-                    }).map((lvl) => {
-                      const isActive = lvl === "auto"
-                        ? isAutoThinkingSelection
-                        : !isAutoThinkingSelection && resolvedThinkingLevel === lvl;
-                      const desc = t(THINKING_LEVEL_DESC_KEYS[lvl]);
-                      const mappedVal = (lvl !== "auto" && thinkingLevelMap) ? thinkingLevelMap[lvl] : undefined;
-                      const displayLabel = (mappedVal != null && mappedVal !== lvl) ? mappedVal : lvl;
-                      const showOriginal = mappedVal != null && mappedVal !== lvl;
-                      return (
-                        <SelectorRow
-                          key={lvl}
-                          active={isActive}
-                          onSelect={() => {
-                            setThinkingDropdownOpen(false);
-                            if (lvl === "auto") {
-                              if (!isAutoThinkingSelection) onThinkingLevelChange("auto");
-                              return;
-                            }
-                            if (!isActive || isAutoThinkingSelection) onThinkingLevelChange(lvl);
-                          }}
-                          gutter={Boolean(onSetDefaultThinkingLevel)}
-                          star={onSetDefaultThinkingLevel && lvl !== "auto"
-                            ? {
-                                isDefault: savedDefaultThinkingLevel === lvl,
-                                saveLabel: t("chat.saveDefaultThinking"),
-                                defaultLabel: t("chat.defaultThinking"),
-                                onSave: () => {
-                                  setThinkingDropdownOpen(false);
-                                  onSetDefaultThinkingLevel(lvl);
-                                },
+                    <div style={{ minHeight: 0, overflowY: "auto", padding: 5 }}>
+                    {onThinkingLevelChange && (
+                      <>
+                      <div className="composer-menu-heading">{t("chat.reasoningHeading")}</div>
+                      {THINKING_LEVELS.filter((lvl) => {
+                        if (!availableThinkingLevels) return true;
+                        if (lvl === "auto") return true;
+                        return availableThinkingLevels.includes(lvl);
+                      }).map((lvl) => {
+                        const isActive = lvl === "auto"
+                          ? isAutoThinkingSelection
+                          : !isAutoThinkingSelection && resolvedThinkingLevel === lvl;
+                        const desc = t(THINKING_LEVEL_DESC_KEYS[lvl]);
+                        const mappedVal = (lvl !== "auto" && thinkingLevelMap) ? thinkingLevelMap[lvl] : undefined;
+                        const displayLabel = (mappedVal != null && mappedVal !== lvl) ? mappedVal : lvl;
+                        const showOriginal = mappedVal != null && mappedVal !== lvl;
+                        return (
+                          <SelectorRow
+                            key={lvl}
+                            active={isActive}
+                            onSelect={() => {
+                              setThinkingDropdownOpen(false);
+                              if (lvl === "auto") {
+                                if (!isAutoThinkingSelection) onThinkingLevelChange("auto");
+                                return;
                               }
-                            : undefined}
-                        >
-                          <span style={{ flex: 1 }}>
-                            {displayLabel}
-                            {showOriginal && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginLeft: 5 }}>({lvl})</span>}
-                          </span>
-                          <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: 8 }}>{desc}</span>
-                        </SelectorRow>
-                      );
-                    })}
-                    </div>
-                  </div>
-                  );
-                })()}
-              </div>
-            )}
-            {onToolPresetChange && (
-              <div ref={toolDropdownRef} style={{ position: "relative" }}>
-                <button
-                  className="native-toolbar-button"
-                  onClick={() => !isStreaming && setToolDropdownOpen((v) => !v)}
-                  disabled={isStreaming}
-                  title={t("chat.changeToolPreset") + `: ${toolPresetLabel}`}
-                  aria-label={t("chat.changeToolPreset")}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                    padding: (isCompact && !controlsMenuOpen) ? "0 6px" : "8px 12px",
-                    width: (isCompact && !controlsMenuOpen) ? 32 : undefined,
-                    height: 32,
-                    background: toolDropdownOpen ? "var(--bg-hover)" : "none",
-                    border: "none",
-                    borderRadius: 9,
-                    color: "var(--text-muted)",
-                    cursor: isStreaming ? "not-allowed" : "pointer",
-                    fontSize: 12,
-                    opacity: isStreaming ? 0.5 : 1,
-                    transition: "background 0.12s, color 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (isStreaming) return;
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                    e.currentTarget.style.color = "var(--text)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = toolDropdownOpen ? "var(--bg-hover)" : "none";
-                    e.currentTarget.style.color = "var(--text-muted)";
-                  }}
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-                  </svg>
-                  {(!isCompact || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{toolPresetLabel}</span>}
-                </button>
-                {toolDropdownOpen && (() => {
-                  const vh = typeof window !== "undefined" ? window.visualViewport?.height ?? window.innerHeight : 800;
-                  const maxH = Math.max(120, vh * 0.6);
-                  return (
-                  <div className="native-popover" style={{
-                    position: "absolute", bottom: "calc(100% + 6px)", right: 0,
-                    zIndex: 100, background: "var(--bg)", border: "1px solid var(--border)",
-                    borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
-                    overflow: "hidden", minWidth: 120,
-                    maxHeight: maxH, display: "flex", flexDirection: "column",
-                  }}>
-                    <div style={{ minHeight: 0, overflowY: "auto" }}>
-                    {TOOL_PRESETS.map((lvl) => {
-                      const preset = TOOL_PRESET_MAP[lvl];
-                      const isActive = (toolPreset ?? "configured") === preset;
-                      let desc: string;
-                      if (lvl === "configured") desc = t("chat.configuredTools");
-                      else if (lvl === "chat-only") desc = t("chat.chatOnly");
-                      else if (lvl === "read-only") desc = t("chat.readOnlyTools", { count: 4 });
-                      else if (lvl === "default") desc = t("chat.builtInTools", { count: 4 });
-                      else desc = t("chat.allBuiltInTools");
-                      return (
-                        <button
-                          key={lvl}
-                          onClick={() => { setToolDropdownOpen(false); if (!isActive) onToolPresetChange(preset); }}
-                          style={{
-                            display: "flex", alignItems: "center", gap: 8,
-                            width: "100%", padding: "7px 12px",
-                            background: isActive ? "var(--bg-selected)" : "none",
-                            border: "none",
-                            color: isActive ? "var(--text)" : "var(--text-muted)",
-                            cursor: "pointer", fontSize: 12, textAlign: "left",
-                            fontWeight: isActive ? 600 : 400,
-                            whiteSpace: "nowrap",
-                          }}
-                          onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                          onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                        >
-                          {isActive
-                            ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
-                            : <span style={{ width: 10, flexShrink: 0 }} />}
-                          <span style={{ flex: 1 }}>{lvl}</span>
-                          <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: 8 }}>{desc}</span>
-                        </button>
-                      );
-                    })}
+                              if (!isActive || isAutoThinkingSelection) onThinkingLevelChange(lvl);
+                            }}
+                            gutter={Boolean(onSetDefaultThinkingLevel)}
+                            star={onSetDefaultThinkingLevel && lvl !== "auto"
+                              ? {
+                                  isDefault: savedDefaultThinkingLevel === lvl,
+                                  saveLabel: t("chat.saveDefaultThinking"),
+                                  defaultLabel: t("chat.defaultThinking"),
+                                  onSave: () => {
+                                    setThinkingDropdownOpen(false);
+                                    onSetDefaultThinkingLevel(lvl);
+                                  },
+                                }
+                              : undefined}
+                          >
+                            <span style={{ flex: 1 }}>
+                              {displayLabel}
+                              {showOriginal && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginLeft: 5 }}>({lvl})</span>}
+                            </span>
+                            <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: 8 }}>{desc}</span>
+                          </SelectorRow>
+                        );
+                      })}
+                      </>
+                    )}
+                    {onToolPresetChange && (
+                      <>
+                      <div className="composer-menu-heading" data-separated={onThinkingLevelChange ? true : undefined}>
+                        {t("chat.toolsHeading")}
+                        {isStreaming && <span className="composer-menu-heading-note">{t("chat.toolsLockedWhileRunning")}</span>}
+                      </div>
+                      {TOOL_PRESETS.map((lvl) => {
+                        const preset = TOOL_PRESET_MAP[lvl];
+                        const isActive = (toolPreset ?? "configured") === preset;
+                        let desc: string;
+                        if (lvl === "configured") desc = t("chat.configuredTools");
+                        else if (lvl === "chat-only") desc = t("chat.chatOnly");
+                        else if (lvl === "read-only") desc = t("chat.readOnlyTools", { count: 4 });
+                        else if (lvl === "default") desc = t("chat.builtInTools", { count: 4 });
+                        else desc = t("chat.allBuiltInTools");
+                        return (
+                          <button
+                            key={lvl}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={isActive}
+                            className="composer-menu-row"
+                            data-active={isActive || undefined}
+                            disabled={isStreaming}
+                            onClick={() => { setThinkingDropdownOpen(false); if (!isActive) onToolPresetChange(preset); }}
+                          >
+                            {isActive
+                              ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
+                              : <span style={{ width: 10, flexShrink: 0 }} />}
+                            <span style={{ flex: 1 }}>{lvl}</span>
+                            <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: 8 }}>{desc}</span>
+                          </button>
+                        );
+                      })}
+                      </>
+                    )}
                     </div>
                   </div>
                   );
@@ -3282,48 +3262,36 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </div>
             )}
 
-            {onCompact && (!isStreaming || isCompacting) && (
+            {/* Manual compaction lives in the session menu below; an active one
+                (manual or auto, mid-run included) stays in the row so it is
+                visible and can be stopped. */}
+            {onCompact && isCompacting && (
               <div style={{ position: "relative" }}>
                 <button
                   className="native-toolbar-button"
-                  onClick={isCompacting ? onAbortCompaction : onCompact}
+                  onClick={onAbortCompaction}
                   style={{
                     display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
                     padding: (isCompact && !controlsMenuOpen) ? "0 6px" : "8px 12px",
                     width: (isCompact && !controlsMenuOpen) ? 32 : undefined,
                     height: 32,
-                    background: isCompacting ? "color-mix(in srgb, var(--danger) 8%, transparent)" : "none",
+                    background: "color-mix(in srgb, var(--danger) 8%, transparent)",
                     border: "none",
                     borderRadius: 9,
-                    color: isCompacting ? "var(--danger)" : "var(--text-muted)",
+                    color: "var(--danger)",
                     cursor: "pointer",
                     fontSize: 12, opacity: 1,
                     transition: "background 0.12s, color 0.12s",
                   }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = isCompacting ? "color-mix(in srgb, var(--danger) 16%, transparent)" : "var(--bg-hover)";
-                    e.currentTarget.style.color = isCompacting ? "var(--danger)" : "var(--text)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = isCompacting ? "color-mix(in srgb, var(--danger) 8%, transparent)" : "none";
-                    e.currentTarget.style.color = isCompacting ? "var(--danger)" : "var(--text-muted)";
-                  }}
-                   title={isCompacting ? t("chat.stopCompaction") : t("chat.compactContext")}
-                   aria-label={isCompacting ? t("chat.stopCompaction") : t("chat.compactContext")}
+                   title={t("chat.stopCompaction")}
+                   aria-label={t("chat.stopCompaction")}
                 >
-                  {isCompacting ? (
-                    <><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="2" y="2" width="6" height="6" rx="1" fill="currentColor" /></svg>{(!isCompact || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{summarizationRetry ? t("chat.compactingRetry", { attempt: summarizationRetry.attempt, max: summarizationRetry.maxAttempts }) : t("chat.compacting")}</span>}</>
-                  ) : (
-                    <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" />
-                      <line x1="10" y1="14" x2="3" y2="21" /><line x1="21" y1="3" x2="14" y2="10" />
-                    </svg>{(!isCompact || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{t("chat.compact")}</span>}</>
-                  )}
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="2" y="2" width="6" height="6" rx="1" fill="currentColor" /></svg>{(!isCompact || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{summarizationRetry ? t("chat.compactingRetry", { attempt: summarizationRetry.attempt, max: summarizationRetry.maxAttempts }) : t("chat.compacting")}</span>}
                 </button>
               </div>
             )}
 
-            {onSetAutomation && automation && (automation.autoCompactionEnabled !== null || automation.autoRetryEnabled !== null || automation.steeringMode !== null) && (
+            {(automationKnown || canCompactNow) && (
               <div ref={automationDropdownRef} style={{ position: "relative" }}>
                 <button
                   className="native-toolbar-button"
@@ -3333,18 +3301,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   aria-expanded={automationDropdownOpen}
                   style={{
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    width: (isCompact && !controlsMenuOpen) ? 32 : undefined,
+                    width: 32,
                     height: 32,
-                    padding: (isCompact && !controlsMenuOpen) ? 0 : "8px 12px",
+                    padding: 0,
                     background: automationDropdownOpen ? "var(--bg-hover)" : "none",
                     border: "none", borderRadius: 9,
                     color: "var(--text-muted)", cursor: "pointer", fontSize: 12,
                     transition: "background 0.12s, color 0.12s",
                   }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = automationDropdownOpen ? "var(--bg-hover)" : "none"; e.currentTarget.style.color = "var(--text-muted)"; }}
                 >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <circle cx="12" cy="12" r="3" />
                     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
                   </svg>
@@ -3354,10 +3320,33 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     position: "absolute",
                     bottom: "calc(100% + 6px)",
                     ...(isMobile ? { left: 0 } : { right: 0 }),
-                    zIndex: 100, background: "var(--bg)", border: "1px solid var(--border)",
+                    zIndex: 100, background: "var(--bg)", border: "var(--hairline) solid var(--border)",
                     borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
                     padding: "6px 0", minWidth: 230,
                   }}>
+                    {canCompactNow && (
+                      <div style={{ padding: "0 5px" }}>
+                        <button
+                          type="button"
+                          className="composer-menu-row"
+                          title={t("chat.compactContext")}
+                          onClick={() => {
+                            setAutomationDropdownOpen(false);
+                            onCompact?.();
+                          }}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" />
+                            <line x1="10" y1="14" x2="3" y2="21" /><line x1="21" y1="3" x2="14" y2="10" />
+                          </svg>
+                          <span style={{ flex: 1 }}>{t("chat.compactContext")}</span>
+                        </button>
+                      </div>
+                    )}
+                    {canCompactNow && automationKnown && (
+                      <div style={{ height: 0, margin: "5px 0", borderTop: "var(--hairline) solid var(--separator)" }} />
+                    )}
+                    {onSetAutomation && automation && automationKnown && (<>
                     {automation.autoCompactionEnabled !== null && (
                       <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>
                         <input
@@ -3379,7 +3368,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       </label>
                     )}
                     {automation.steeringMode !== null && (
-                      <div style={{ padding: "6px 12px", borderTop: "1px solid var(--border)", marginTop: 4, paddingTop: 10 }}>
+                      <div style={{ padding: "6px 12px", borderTop: "var(--hairline) solid var(--border)", marginTop: 4, paddingTop: 10 }}>
                         <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>{t("chat.steeringMode")}</div>
                         <div style={{ display: "flex", gap: 4 }}>
                           {(["all", "one-at-a-time"] as const).map((mode) => (
@@ -3389,9 +3378,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                               onClick={() => onSetAutomation({ steeringMode: mode })}
                               style={{
                                 flex: 1, height: 26, fontSize: 11,
-                                border: "1px solid var(--border)", borderRadius: 6,
+                                border: "var(--hairline) solid var(--border)", borderRadius: 6,
                                 background: automation.steeringMode === mode ? "var(--accent)" : "var(--bg)",
-                                color: automation.steeringMode === mode ? "#fff" : "var(--text-muted)",
+                                color: automation.steeringMode === mode ? "var(--accent-contrast)" : "var(--text-muted)",
                                 cursor: "pointer",
                               }}
                             >
@@ -3412,9 +3401,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                               onClick={() => onSetAutomation({ followUpMode: mode })}
                               style={{
                                 flex: 1, height: 26, fontSize: 11,
-                                border: "1px solid var(--border)", borderRadius: 6,
+                                border: "var(--hairline) solid var(--border)", borderRadius: 6,
                                 background: automation.followUpMode === mode ? "var(--accent)" : "var(--bg)",
-                                color: automation.followUpMode === mode ? "#fff" : "var(--text-muted)",
+                                color: automation.followUpMode === mode ? "var(--accent-contrast)" : "var(--text-muted)",
                                 cursor: "pointer",
                               }}
                             >
@@ -3424,6 +3413,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                         </div>
                       </div>
                     )}
+                    </>)}
                   </div>
                 )}
               </div>
@@ -3433,21 +3423,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               <button
                 onClick={onAbort}
                  title={t("chat.stopAgent")}
+                className="composer-stop-button"
                 style={{
                   display: "flex", alignItems: "center", gap: 6,
                   padding: "8px 14px",
                   height: 32,
-                  background: "color-mix(in srgb, var(--danger) 8%, transparent)",
-                  border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
                   borderRadius: 9,
-                  color: "var(--danger)",
                   cursor: "pointer",
                   fontSize: 12, fontWeight: 600,
                   whiteSpace: "nowrap", letterSpacing: "-0.01em",
-                  transition: "background 0.12s",
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "color-mix(in srgb, var(--danger) 16%, transparent)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "color-mix(in srgb, var(--danger) 8%, transparent)"; }}
               >
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                   <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="currentColor" />
@@ -3456,51 +3441,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </button>
             )}
 
-            {onSoundToggle !== undefined && (
-              <button
-                className="native-toolbar-button"
-                onClick={onSoundToggle}
-                 title={soundEnabled ? t("chat.disableSound") : t("chat.enableSound")}
-                 aria-label={soundEnabled ? t("chat.disableSound") : t("chat.enableSound")}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                  width: 32,
-                  height: 32,
-                  padding: 0,
-                  background: "none",
-                  border: "none",
-                  borderRadius: 9,
-                  color: soundEnabled ? "var(--text-muted)" : "var(--text-dim)",
-                  cursor: "pointer",
-                  opacity: soundEnabled ? 1 : 0.55,
-                  transition: "background 0.12s, color 0.12s, opacity 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--bg-hover)";
-                  e.currentTarget.style.color = "var(--text)";
-                  e.currentTarget.style.opacity = "1";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "none";
-                  e.currentTarget.style.color = soundEnabled ? "var(--text-muted)" : "var(--text-dim)";
-                  e.currentTarget.style.opacity = soundEnabled ? "1" : "0.55";
-                }}
-              >
-                {soundEnabled ? (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                  </svg>
-                ) : (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                    <line x1="23" y1="9" x2="17" y2="15" />
-                    <line x1="17" y1="9" x2="23" y2="15" />
-                  </svg>
-                )}
-              </button>
-            )}
             {isNarrow && controlsMenuOpen && (
               <button
                 type="button"
@@ -3508,7 +3448,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                  aria-label={t("chat.collapseControls")}
                 aria-expanded={true}
                 onClick={() => {
-                  setToolDropdownOpen(false);
                   setThinkingDropdownOpen(false);
                   setControlsMenuOpen(false);
                 }}
@@ -3522,7 +3461,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   marginLeft: 0,
                   background: "var(--bg-hover)",
                   border: "none",
-                  borderLeft: "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
+                  borderLeft: "var(--hairline) solid color-mix(in srgb, var(--border) 72%, transparent)",
                   borderRadius: "0 9px 9px 0",
                   color: "var(--text)",
                   cursor: "pointer",
@@ -3545,7 +3484,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           </div>
 
         </div>}
-          </div>
         </div>
       </div>
     </fieldset>

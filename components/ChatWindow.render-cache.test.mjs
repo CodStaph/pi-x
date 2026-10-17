@@ -4,7 +4,7 @@ import test from "node:test";
 import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url, { jsx: { runtime: "automatic" }, tsconfigPaths: true });
-const { getFinalSplit, getTurnWrittenFiles } = await jiti.import("./ChatWindow.tsx");
+const { getFinalSplit, getTurnWrittenFiles } = await jiti.import("./ChatWindow");
 const source = await readFile(new URL("./ChatWindow.tsx", import.meta.url), "utf8");
 const markdownSource = await readFile(new URL("./MarkdownBody.tsx", import.meta.url), "utf8");
 

@@ -1,4 +1,5 @@
 "use client";
+import type { UnavailableWorkspace } from "@/lib/workspace-availability";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -20,10 +21,11 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { phaseLabel } from "@/lib/chat-phase-label";
 import { useAgentSession, type NoticeItem } from "@/hooks/useAgentSession";
 import { useDragDrop } from "@/hooks/useDragDrop";
+import { assignMessageKeys, createMessageKeyTracker } from "@/lib/message-keys";
 import { useScrollbarVisibility } from "@/hooks/useScrollbarVisibility";
+import { useArtifactPublisher } from "@/hooks/useArtifactPublisher";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import { importDroppedProjectFiles, partitionChatDroppedFiles } from "@/lib/chat-file-drop";
-import type { AppUpdateResponse } from "@/lib/api-types";
 import type { ToolEntry } from "@/lib/tool-presets";
 import type { SettingsSection } from "@/lib/settings-navigation";
 import { findChatScrollAnchor, type ChatScrollPosition } from "@/lib/chat-scroll-position";
@@ -52,6 +54,8 @@ interface Props {
   onSessionCreated?: (session: SessionInfo, sourceDraftKey: string) => void;
   onSessionForked?: (newSessionId: string) => void;
   modelsRefreshKey?: number;
+  workspaceUnavailable?: UnavailableWorkspace | null;
+  onRecheckWorkspace?: () => void;
   chatInputRef?: React.RefObject<ChatInputHandle | null>;
   onBranchDataChange?: (tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null, options?: LeafChangeOptions) => void, locked: boolean) => void;
   onSystemPromptChange?: (prompt: string | null) => void;
@@ -80,7 +84,6 @@ interface Props {
   /** Completion sound state + controls, owned by AppShell so tasks finishing in
    *  a non-active workspace can still ring. */
   soundEnabled?: boolean;
-  onSoundToggle?: () => void;
   playDoneSound?: () => void;
   unlockAudio?: () => void;
 }
@@ -253,75 +256,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = fa
   );
 }
 
-function NewSessionUpdateLink({
-  label,
-}: {
-  label: (version: string) => string;
-}) {
-  const [update, setUpdate] = useState<AppUpdateResponse | null>(null);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetch("/api/app-update", { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) return null;
-        return response.json() as Promise<AppUpdateResponse>;
-      })
-      .then((result) => {
-        if (result?.updateAvailable && result.latestVersion && result.releaseUrl) {
-          setUpdate(result);
-        }
-      })
-      .catch(() => {
-        // Update checks are best-effort and must not interrupt a new session.
-      });
-    return () => controller.abort();
-  }, []);
-
-  if (!update) return null;
-  const accessibleLabel = label(update.latestVersion);
-
-  return (
-    <a
-      href={update.releaseUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      title={accessibleLabel}
-      aria-label={accessibleLabel}
-      onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; }}
-      onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        alignSelf: "center",
-        gap: 3,
-        minHeight: 32,
-        // The chip owns the gap above the composer: the row that hosts it is
-        // empty (zero height, no margin) whenever no update is pending.
-        marginBottom: 12,
-        minWidth: 0,
-        padding: "0 4px",
-        background: "transparent",
-        borderRadius: 5,
-        color: "var(--accent)",
-        fontSize: 12,
-        fontWeight: 600,
-        lineHeight: 1.2,
-        textDecoration: "none",
-        transition: "background 0.12s",
-        whiteSpace: "nowrap",
-      }}
-    >
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>v{update.latestVersion}</span>
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
-        <path d="M7 17 17 7" />
-        <path d="M7 7h10v10" />
-      </svg>
-    </a>
-  );
-}
-
-export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onOpenSettings, onOpenModelsConfig, onContextUsageChange, onOpenFile, onOpenSession, onAskInNewChat, onSelectProject, projectOptions, onProjectChange, onProjectFilesImported, quoteSelectionEnabled = true, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
+export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, workspaceUnavailable, onRecheckWorkspace, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onOpenSettings, onOpenModelsConfig, onContextUsageChange, onOpenFile, onOpenSession, onAskInNewChat, onSelectProject, projectOptions, onProjectChange, onProjectFilesImported, quoteSelectionEnabled = true, initialPrompt, onInitialPromptConsumed, soundEnabled = true, playDoneSound = () => {}, unlockAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const messageRefs = useRef<Record<number, HTMLDivElement | null>>({});
@@ -369,7 +304,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     sessionIdRef, scrollContainerRef,
     lastUserMsgRef, promptAnchorActive,
     branchSummaryPending, handleAbortBranchSummary, routedModel,
-    handleSend, handleAbort, handleAbortRetry, handleFork, handleNavigate, handleEditContent, cancelEdit, handleModelChange,
+    handleSend, handleAbort, handleAbortRetry, handleFork, handleEditContent, cancelEdit, handleModelChange,
     handleCompact, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
     retryLoad,
     dismissModelScopeWarnings,
@@ -507,7 +442,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 
   const askSelectionInNewChat = useCallback(async (prompt: string) => {
     const sourceSessionId = sessionIdRef.current ?? session?.id;
-    if (quoteSubmitting || !prompt.trim() || !quotedSelection?.sourceEntryId || !sourceSessionId || !onAskInNewChat) return;
+    if (quoteSubmitting || workspaceUnavailable || !prompt.trim() || !quotedSelection?.sourceEntryId || !sourceSessionId || !onAskInNewChat) return;
     setQuoteSubmitting(true);
     setQuoteError(null);
     unlockAudio?.();
@@ -524,15 +459,15 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     } finally {
       setQuoteSubmitting(false);
     }
-  }, [onAskInNewChat, quotedSelection, quoteSubmitting, session?.id, sessionIdRef, closeQuotedSelection, unlockAudio]);
+  }, [onAskInNewChat, workspaceUnavailable, quotedSelection, quoteSubmitting, session?.id, sessionIdRef, closeQuotedSelection, unlockAudio]);
 
   const initialPromptSentRef = useRef(false);
   useEffect(() => {
-    if (loading || error || !initialPrompt || initialPromptSentRef.current) return;
+    if (loading || error || workspaceUnavailable || !initialPrompt || initialPromptSentRef.current) return;
     initialPromptSentRef.current = true;
     onInitialPromptConsumed?.();
     void handleSend(initialPrompt);
-  }, [initialPrompt, loading, error, handleSend, onInitialPromptConsumed]);
+  }, [initialPrompt, loading, error, workspaceUnavailable, handleSend, onInitialPromptConsumed]);
 
   const conversationTurns = useMemo<ConversationTurnLocation[]>(() => {
     const turns: ConversationTurnLocation[] = [];
@@ -938,6 +873,22 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   }, [messages]);
 
   const isEmptyNew = isNew && !loading && !error && messages.length === 0 && !streamState.isStreaming && !sessionBusy;
+  // Keys that do not change when a sent or streamed message gets its entry id
+  // on the post-run reload; keying by the id remounted the sent bubble.
+  const messageKeyTrackerRef = useRef<{ sessionId: string | null; tracker: ReturnType<typeof createMessageKeyTracker> } | null>(null);
+  const messageKeySessionId = session?.id ?? sessionIdRef.current ?? null;
+  const messageKeys = useMemo(() => {
+    let current = messageKeyTrackerRef.current;
+    // A new session's id appears only after its first send; keep the tracker
+    // across that null -> id step so the first bubble survives it too.
+    if (!current || (current.sessionId !== null && current.sessionId !== messageKeySessionId)) {
+      current = { sessionId: messageKeySessionId, tracker: createMessageKeyTracker() };
+      messageKeyTrackerRef.current = current;
+    }
+    current.sessionId = messageKeySessionId;
+    return assignMessageKeys(current.tracker, messages, entryIds);
+  }, [messageKeySessionId, messages, entryIds]);
+
   useScrollbarVisibility(scrollContainerRef, Boolean(session?.id) || !isEmptyNew);
 
   // The message scrollport always shows its (usually invisible) scrollbar track,
@@ -1107,6 +1058,18 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   }, [streamState.streamingMessage]);
 
 
+  useArtifactPublisher(
+    session?.id ?? sessionIdRef.current,
+    messages,
+    streamState.isStreaming ? streamState.streamingMessage : null,
+    // While an earlier message is being edited, sending would replace that
+    // branch, so the request waits in the composer instead.
+    (text) => {
+      if (editEntryId) chatInputRef?.current?.insertText(text);
+      else void handleSend(text);
+    },
+  );
+
   const availableThinkingLevels = displayModelValue
     ? (modelThinkingLevels[`${displayModelValue.provider}:${displayModelValue.modelId}`] ?? null)
     : null;
@@ -1117,9 +1080,11 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 
   // Jump to a conversation turn from the navigator rail. Turns can sit
   // outside the rendered window, so expand the window to the full branch
-  // first, then scroll once the anchor is mounted.
+  // first, then scroll once the anchor is mounted. The window counts rendered
+  // items, not messages: a turn's "Process details" group is one more item, so
+  // messages.length alone left the first turn outside the window.
   const selectConversationTurn = useCallback((turnIndex: number) => {
-    setVisibleCount(messages.length);
+    setVisibleCount((current) => Math.max(current, messages.length * 2));
     requestAnimationFrame(() => requestAnimationFrame(() => {
       const container = scrollContainerRef.current;
       const anchor = container?.querySelector<HTMLElement>(`[data-conversation-turn="${turnIndex}"]`);
@@ -1143,6 +1108,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       modelNames={modelNames}
       modelList={modelList}
       modelError={modelError}
+      workspaceUnavailable={workspaceUnavailable}
+      onRecheckWorkspace={onRecheckWorkspace}
       modelScopeWarnings={modelScopeWarnings}
       onDismissModelScopeWarnings={dismissModelScopeWarnings}
       onOpenModelsConfig={onOpenModelsConfig}
@@ -1180,8 +1147,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       slashCommandsLoading={slashCommandsLoading}
       onLoadSlashCommands={loadSlashCommands}
       onBuiltinCommand={handleBuiltinSlashCommand}
-      soundEnabled={soundEnabled}
-      onSoundToggle={onSoundToggle}
       onAudioUnlock={unlockAudio}
       draftKey={session?.id ?? newSessionDraftKey ?? undefined}
       cwd={session?.cwd ?? newSessionCwd}
@@ -1269,7 +1234,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
             <div style={{ maxWidth: 320, color: "var(--text)", fontSize: 13, fontWeight: 550, lineHeight: 1.35 }}>
               {t("chat.dropFilesHint")}
             </div>
-            <div style={{ maxWidth: 360, color: "var(--text-muted)", fontSize: 11.5, lineHeight: 1.4 }}>
+            <div style={{ maxWidth: 360, color: "var(--text-muted)", fontSize: 12, lineHeight: 1.4 }}>
               {t("chat.dropFilesDetail")}
             </div>
           </div>
@@ -1341,6 +1306,14 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 }
               });
 
+              // Turn numbers for the navigator rail: they must count user messages
+              // exactly like `conversationTurns`, whose indexes the rail selects.
+              const turnIndexByMessageIndex = new Map<number, number>();
+              let nextTurnIndex = 0;
+              messages.forEach((msg, idx) => {
+                if (getUserInputText(msg)) turnIndexByMessageIndex.set(idx, nextTurnIndex++);
+              });
+
               const attachVisibleRef = (idx: number, refIndex: number) => (el: HTMLDivElement | null) => {
                 messageRefs.current[refIndex] = el;
                 if (idx === lastUserIdx) { (lastUserMsgRef as { current: HTMLDivElement | null }).current = el; }
@@ -1351,7 +1324,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 const isVisible = isMessageGroupAnchor(msg) || msg.role === "assistant";
                 const currentRefIdx = visibleRefIndexByMessage.get(idx);
                 const keyPrefix = options.keyPrefix ?? "message";
-                const messageKey = entryIds[idx] ?? idx;
+                const messageKey = messageKeys[idx] ?? idx;
                 let showTimestamp = false;
                 if (msg.role === "assistant") {
                   showTimestamp = true;
@@ -1393,7 +1366,11 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 );
                 if (!isVisible || currentRefIdx === undefined) return view;
                 return (
-                  <div key={`${keyPrefix}-${messageKey}`} data-entry-id={entryIds[idx]} ref={options.attachRef === false ? undefined : attachVisibleRef(idx, currentRefIdx)}>
+                  <div
+                    key={`${keyPrefix}-${messageKey}`}
+                    data-entry-id={entryIds[idx]}
+                    data-conversation-turn={turnIndexByMessageIndex.get(idx)}
+                    ref={options.attachRef === false ? undefined : attachVisibleRef(idx, currentRefIdx)}>
                     {view}
                   </div>
                 );
@@ -1471,7 +1448,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 if (processViews.length > 0) {
                   rendered.push(
                     <div
-                      key={`process-group-${entryIds[groupStartIdx] ?? groupStartIdx}`}
+                      key={`process-group-${messageKeys[groupStartIdx] ?? groupStartIdx}`}
                       ref={processRefIdx === undefined ? undefined : (el) => { messageRefs.current[processRefIdx] = el; }}
                     >
                       {/* Re-key on answer availability: useState reads defaultExpanded only
@@ -1577,7 +1554,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
             maxHeight: "calc(var(--app-viewport-height, 100dvh) - 16px)",
             overflowY: "auto",
             padding: quoteInputOpen ? 12 : 3,
-            border: "1px solid var(--border)",
+            border: "var(--hairline) solid var(--border)",
             borderRadius: 6,
             background: "var(--bg)",
             boxShadow: "0 2px 10px rgba(0,0,0,0.12)",
@@ -1601,6 +1578,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 onSend={askSelectionInNewChat}
                 onAbort={closeQuotedSelection}
                 isStreaming={false}
+                workspaceUnavailable={workspaceUnavailable}
+                onRecheckWorkspace={onRecheckWorkspace}
               />
               {quoteError && <div role="alert" style={{ color: "#dc2626", fontSize: 12, overflowWrap: "anywhere" }}>{quoteError}</div>}
             </fieldset>
@@ -1677,17 +1656,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
             </button>
           </div>
         )}
-        {/* New-session header: the fork removed the product icon and name
-            (they sat directly above the composer, adding nothing the window
-            chrome did not already say), so the update chip is the only thing
-            left in this row — and the row collapses to zero height without it. */}
-        {isEmptyNew && (
-          <div className="w-full" style={{ padding: "0 16px" }}>
-            <div style={{ display: "flex", alignItems: "center", maxWidth: "var(--chat-content-max-width, 820px)", margin: "0 auto", fontFamily: "var(--font-mono)" }}>
-              <NewSessionUpdateLink label={(version) => t("appUpdate.releaseNotes", { version })} />
-            </div>
-          </div>
-        )}
         {aboveEditorWidgets.length > 0 && (
           <div className="mb-2 w-full" style={{ padding: "0 16px" }}>
             <div style={{ maxWidth: "var(--chat-content-max-width, 820px)", margin: "0 auto" }}>
@@ -1760,7 +1728,7 @@ function NoticeShelf({ notices, floating = false, onPauseChange }: { notices: No
               marginBottom: index === notices.length - 1 ? 0 : 6,
               overflow: "hidden",
               borderRadius: 10,
-              border: "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
+              border: "var(--hairline) solid color-mix(in srgb, var(--border) 70%, transparent)",
               background: "var(--bg)",
               color: "var(--text-muted)",
               width: "fit-content",
@@ -1910,7 +1878,7 @@ function ExtensionDialog({
             maxWidth: "min(560px, 100%)",
             width: "100%",
             padding: "10px 12px",
-            border: "1px solid var(--border)",
+            border: "var(--hairline) solid var(--border)",
             borderRadius: 8,
             background: "var(--bg)",
             boxShadow: "0 12px 32px rgba(0,0,0,0.18)",
@@ -1946,14 +1914,14 @@ function ExtensionDialog({
           maxHeight: "min(760px, 100%)",
           display: "flex",
           flexDirection: "column",
-          border: "1px solid var(--border)",
+          border: "var(--hairline) solid var(--border)",
           borderRadius: 8,
           background: "var(--bg)",
           boxShadow: "0 20px 60px rgba(0,0,0,0.28)",
           overflow: "hidden",
         }}
       >
-        <div style={{ flexShrink: 1, minHeight: 0, display: "flex", alignItems: "flex-start", gap: 8, padding: "12px 14px", borderBottom: "1px solid var(--border)", maxHeight: "50vh", overflowY: "auto" }}>
+        <div style={{ flexShrink: 1, minHeight: 0, display: "flex", alignItems: "flex-start", gap: 8, padding: "12px 14px", borderBottom: "var(--hairline) solid var(--border)", maxHeight: "50vh", overflowY: "auto" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             {/* Pi's TUI shows the title verbatim, newlines included; select/input have no
                 separate message field, so extensions put multi-line text here. */}
@@ -1976,7 +1944,7 @@ function ExtensionDialog({
               width: 28,
               height: 28,
               borderRadius: 6,
-              border: "1px solid var(--border)",
+              border: "var(--hairline) solid var(--border)",
               background: "var(--bg-panel)",
               color: "var(--text-muted)",
               cursor: "pointer",
@@ -2032,7 +2000,7 @@ function ExtensionDialog({
                     width: "100%",
                     padding: "9px 10px",
                     borderRadius: 7,
-                    border: "1px solid var(--border)",
+                    border: "var(--hairline) solid var(--border)",
                     background: "var(--bg-panel)",
                     color: "var(--text)",
                     cursor: "pointer",
@@ -2065,7 +2033,7 @@ function ExtensionDialog({
                     alignItems: "center",
                     gap: 7,
                     padding: "7px 10px",
-                    border: "1px solid color-mix(in srgb, var(--accent) 42%, transparent)",
+                    border: "var(--hairline) solid color-mix(in srgb, var(--accent) 42%, transparent)",
                     borderRadius: 7,
                     background: "color-mix(in srgb, var(--accent) 10%, transparent)",
                     color: "var(--accent)",
@@ -2099,7 +2067,7 @@ function ExtensionDialog({
                 width: "100%",
                 padding: "9px 10px",
                 borderRadius: 7,
-                border: "1px solid var(--border)",
+                border: "var(--hairline) solid var(--border)",
                 background: "var(--bg-panel)",
                 color: "var(--text)",
                 outline: "none",
@@ -2120,7 +2088,7 @@ function ExtensionDialog({
                 minHeight: 220,
                 padding: 10,
                 borderRadius: 7,
-                border: "1px solid var(--border)",
+                border: "var(--hairline) solid var(--border)",
                 background: "var(--bg-panel)",
                 color: "var(--text)",
                 outline: "none",
@@ -2133,14 +2101,14 @@ function ExtensionDialog({
           )}
         </div>
 
-        <div style={{ flexShrink: 0, display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}>
+        <div style={{ flexShrink: 0, display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: "var(--hairline) solid var(--border)", background: "var(--bg-panel)" }}>
           <button
             autoFocus={request.method === "confirm" || (request.method === "select" && request.options.length === 0)}
             onClick={() => onRespond(request, { cancelled: true })}
             style={{
               padding: "6px 10px",
               borderRadius: 6,
-              border: "1px solid var(--border)",
+              border: "var(--hairline) solid var(--border)",
               background: "var(--bg)",
               color: "var(--text-muted)",
               cursor: "pointer",
@@ -2154,7 +2122,7 @@ function ExtensionDialog({
               style={{
                 padding: "6px 10px",
                 borderRadius: 6,
-                border: "1px solid var(--accent)",
+                border: "var(--hairline) solid var(--accent)",
                 background: "var(--accent)",
                 color: "var(--accent-contrast)",
                 cursor: "pointer",
@@ -2168,7 +2136,7 @@ function ExtensionDialog({
               style={{
                 padding: "6px 10px",
                 borderRadius: 6,
-                border: "1px solid var(--accent)",
+                border: "var(--hairline) solid var(--accent)",
                 background: "var(--accent)",
                 color: "var(--accent-contrast)",
                 cursor: "pointer",
@@ -2234,7 +2202,7 @@ function ExtensionCustomPanel({
             maxWidth: "min(920px, 100%)",
             width: "100%",
             padding: "10px 12px",
-            border: "1px solid var(--border)",
+            border: "var(--hairline) solid var(--border)",
             borderRadius: 8,
             background: "var(--bg)",
             boxShadow: "0 12px 32px rgba(0,0,0,0.18)",
@@ -2272,7 +2240,7 @@ function ExtensionCustomPanel({
           maxHeight: "min(760px, 100%)",
           display: "flex",
           flexDirection: "column",
-          border: "1px solid var(--border)",
+          border: "var(--hairline) solid var(--border)",
           borderRadius: 8,
           background: "var(--bg)",
           boxShadow: "0 20px 60px rgba(0,0,0,0.28)",
@@ -2328,7 +2296,7 @@ function ExtensionCustomPanel({
             pointerEvents: "none",
           }}
         />
-        <div style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", borderBottom: "var(--hairline) solid var(--border)" }}>
            <div style={{ color: "var(--text)", fontSize: 13, fontWeight: 650 }}>{t("chat.extensionPanel")}</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <ExtensionWaitingCount count={waitingCount} />
@@ -2344,7 +2312,7 @@ function ExtensionCustomPanel({
                 width: 28,
                 height: 28,
                 borderRadius: 6,
-                border: "1px solid var(--border)",
+                border: "var(--hairline) solid var(--border)",
                 background: "var(--bg-panel)",
                 color: "var(--text-muted)",
                 cursor: "pointer",
@@ -2360,7 +2328,7 @@ function ExtensionCustomPanel({
               style={{
                 padding: "5px 9px",
                 borderRadius: 6,
-                border: "1px solid var(--border)",
+                border: "var(--hairline) solid var(--border)",
                 background: "var(--bg-panel)",
                 color: "var(--text-muted)",
                 cursor: "pointer",

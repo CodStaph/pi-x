@@ -7,7 +7,7 @@ import { createJiti } from "jiti";
 
 const source = await readFile(new URL("./AppShell.tsx", import.meta.url), "utf8");
 const jiti = createJiti(import.meta.url);
-const draftStore = await jiti.import("../lib/draft-store.ts");
+const draftStore = await jiti.import("../lib/draft-store");
 
 function callbackBody(name, nextName) {
   const start = source.indexOf(`const ${name} = useCallback`);
@@ -85,6 +85,8 @@ test("New restores the draft after session navigation and workspace auto-restore
         useCallback: (callback) => callback,
         useGlobalKeyboardShortcuts() {},
         useNativeAppMenu() {},
+        handleRightPanelClose() {},
+        rightPanelOpen: false,
         activeNewSessionDraftKeyRef: { current: `new:initial:${cwd}` },
         activeProjectKeyRef: { current: cwd },
         workspaceRestoreTokenRef: { current: 0 },
@@ -95,6 +97,8 @@ test("New restores the draft after session navigation and workspace auto-restore
         cancelEventStreamGrace() {},
         closeEvents() {},
         closeSettingsMenu() {},
+        settingsSection: null,
+        getLastSettingsSection: () => "general",
         isMobile: false,
         desktopMode: false,
         activeCwd: cwd,

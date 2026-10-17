@@ -1,4 +1,5 @@
 import type { CacheWarmingInfo } from "./types";
+import { formatUsdCost, type CostFormatter } from "./cost-format";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
@@ -22,14 +23,18 @@ export function formatWarmingDelay(ms: number): string {
   return parts.join("");
 }
 
-const dollars = (value: number) => `$${value.toFixed(3)}`;
-
 /**
  * The Cache Warming block of pi's `/session` (interactive-mode `handleSessionCommand` +
  * `formatCacheWarmingStatus`), as label/value rows in the UI language. pi's own `reason`
  * text is shown as it comes, since it names pi's internal condition.
  */
-export function cacheWarmingRows(info: CacheWarmingInfo, t: Translate, now = Date.now()): Array<[string, string]> {
+export function cacheWarmingRows(
+  info: CacheWarmingInfo,
+  t: Translate,
+  now = Date.now(),
+  formatCost: CostFormatter = formatUsdCost,
+): Array<[string, string]> {
+  const dollars = (value: number) => formatCost(value, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
   const rows: Array<[string, string]> = [[t("session.cacheWarmingMode"), t(MODE_KEYS[info.mode] ?? info.mode)]];
   const status = info.status;
   const decision = status?.decision;

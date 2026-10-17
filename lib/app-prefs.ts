@@ -14,11 +14,19 @@ export const APP_PREF_KEYS = {
   rightPanelWidth: "pi-right-panel-width",
   unreadSessionIds: "pi-web:unread-session-ids",
   archivedProjects: "pi-web:archived-projects",
+  /** Project roots whose session list is folded in the sidebar tree. */
+  collapsedProjects: "pi-web:collapsed-projects",
   updateSnooze: "pi-web:update-snooze",
   closeQuits: "pi-desktop-close-quits",
   notifyOnComplete: "pi-desktop-notify-on-complete",
   chatDrafts: "pi-chat-drafts-v1",
   diffViewMode: "pi-diff-view-mode",
+  /** Window background image as a data URL (see lib/app-background.ts). */
+  backgroundImage: "pi-background-image",
+  /** JSON AppBackgroundOptions for the background image (dim/blur/fit). */
+  backgroundImageOptions: "pi-background-image-options",
+  /** Default shell profile id for newly opened terminals. */
+  terminalShell: "pi-terminal-shell",
   /** Last open session / cwd / file tabs for desktop cold-start restore. */
   workspace: "pi-workspace-v1",
 } as const;

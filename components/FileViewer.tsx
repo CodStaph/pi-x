@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback, useMemo, type CSSProperties, type MouseEvent, type ReactNode } from "react";
+import dynamic from "next/dynamic";
 import {
   createElement as renderSyntaxNode,
   type SyntaxHighlighterProps,
 } from "react-syntax-highlighter";
 import { SyntaxHighlighter, vs, vscDarkPlus } from "@/lib/syntax-highlighting";
 import ReactMarkdown from "react-markdown";
+import { useFileContextMenu } from "@/hooks/useFileContextMenu";
 import { useTheme } from "@/hooks/useTheme";
 import {
   DOCX_PREVIEW_MAX_BYTES,
@@ -31,6 +33,11 @@ import {
   type FileViewerDisplayMode as DisplayMode,
   type FileViewerState,
 } from "@/lib/file-viewer-state";
+import { clearFileDraft, getFileDraft, setFileDraft } from "@/lib/file-draft-cache";
+
+// CodeMirror is only needed in edit mode, so it stays out of the read-only
+// viewer's chunk and is fetched the first time the user opens the editor.
+const FileEditor = dynamic(() => import("./FileEditor").then((m) => m.FileEditor), { ssr: false });
 
 export type { FileViewerState } from "@/lib/file-viewer-state";
 
@@ -57,6 +64,9 @@ interface FileData {
   size: number;
   nextOffset: number;
   truncated: boolean;
+  /** Present from the read endpoint; the save request echoes it back so the
+   *  server can refuse a write that would clobber an external edit. */
+  mtimeMs?: number;
 }
 
 const SOURCE_HIGHLIGHT_MAX_LINES = 1_000;
@@ -79,7 +89,7 @@ const FILE_LINE_NUMBER_STYLE: CSSProperties = {
   textAlign: "right",
   color: "var(--text-dim)",
   background: "var(--bg-panel)",
-  borderRight: "1px solid var(--border)",
+  borderRight: "var(--hairline) solid var(--border)",
   fontFamily: "var(--font-mono)",
   fontSize: 11,
   fontStyle: "normal",
@@ -211,7 +221,7 @@ function SourceCodeRenderer({ rows, stylesheet, useInlineStyles, wrapLines }: So
 
 function getFileApiUrl(
   filePath: string,
-  type: "read" | "download" | "meta" | "preview" | "serve" | "watch",
+  type: "read" | "download" | "meta" | "preview" | "serve" | "watch" | "write",
   sourceSessionId?: string | null,
   params: Record<string, string | number | undefined> = {},
 ): string {
@@ -319,9 +329,10 @@ function FileViewerToolbar({
   sourceSessionId?: string | null;
   children?: ReactNode;
 }) {
+  const fileContextMenu = useFileContextMenu();
   const relativePath = getRelativeFilePath(filePath, cwd);
   return (
-    <div className="file-viewer-toolbar">
+    <div className="file-viewer-toolbar" onContextMenu={(event) => fileContextMenu(event, { filePath })}>
       <div className="file-viewer-identity">
         <span className="file-viewer-file-icon" aria-hidden="true">
           {getFileIcon(getFileName(filePath), 15)}
@@ -342,52 +353,6 @@ function FileViewerToolbar({
         <DesktopPathActions filePath={filePath} />
         <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
       </div>
-    </div>
-  );
-}
-
-function FileViewerStatus({
-  kind,
-  message,
-  onRetry,
-}: {
-  kind: "loading" | "error" | "empty";
-  message?: string;
-  onRetry?: () => void;
-}) {
-  const title = kind === "loading"
-    ? "Opening file"
-    : kind === "error"
-      ? "Couldn’t open this file"
-      : "Nothing to preview";
-
-  return (
-    <div className={`file-viewer-status is-${kind}`} role={kind === "error" ? "alert" : "status"}>
-      <span className="file-viewer-status-icon" aria-hidden="true">
-        {kind === "loading" ? (
-          <svg className="file-viewer-spinner" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-            <path d="M21 12a9 9 0 1 1-5.7-8.4" />
-          </svg>
-        ) : kind === "error" ? (
-          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M12 7.5v5" />
-            <path d="M12 16.5h.01" />
-          </svg>
-        ) : (
-          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h7L20 9.5v9A2.5 2.5 0 0 1 17.5 21h-11A2.5 2.5 0 0 1 4 18.5Z" />
-            <path d="M13.5 3v6.5H20" />
-          </svg>
-        )}
-      </span>
-      <strong>{title}</strong>
-      {message && <span>{message}</span>}
-      {onRetry && (
-        <button type="button" className="file-viewer-retry-button" onClick={onRetry}>
-          Try again
-        </button>
-      )}
     </div>
   );
 }
@@ -503,8 +468,8 @@ function DiffView({ patch }: { patch: string }) {
                 color: "var(--text-dim)",
                 background: "var(--bg-panel)",
                 fontSize: 11,
-                borderTop: "1px solid var(--border)",
-                borderBottom: "1px solid var(--border)",
+                borderTop: "var(--hairline) solid var(--border)",
+                borderBottom: "var(--hairline) solid var(--border)",
               }}
             >
               ... {seg.count} unchanged lines ...
@@ -902,7 +867,7 @@ function VideoViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
           alignItems: "center",
           gap: 12,
           padding: "4px 16px",
-          borderBottom: "1px solid var(--border)",
+          borderBottom: "var(--hairline) solid var(--border)",
           fontSize: 11,
           color: "var(--text-dim)",
           background: "var(--bg)",
@@ -1139,6 +1104,14 @@ function TextFileViewer({
   // isolated srcDoc sandbox instead, where scripts run but local files don't load.
   const [htmlScriptsEnabled, setHtmlScriptsEnabled] = useState(false);
   const [htmlPreviewRevision, setHtmlPreviewRevision] = useState(0);
+  // In-place editing. `draft` is the CodeMirror document; `data.content` stays
+  // the last disk baseline, so dirty tracking and the save conflict check both
+  // compare against what was actually loaded from disk.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [diskChanged, setDiskChanged] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const contentRequestRef = useRef(0);
   const gitDiffRequestRef = useRef(0);
@@ -1153,8 +1126,27 @@ function TextFileViewer({
   });
   const onStateChangeRef = useRef(onStateChange);
   const [selectedLineRange, setSelectedLineRange] = useState<SelectedLineRange | null>(null);
+  // Read at unmount time to stash unsaved edits without re-registering the
+  // cleanup effect on every keystroke.
+  const dirtyRef = useRef(false);
+  const draftRef = useRef<string | null>(null);
+  const dataRef = useRef<FileData | null>(null);
+  const draftRestoredRef = useRef<string | null>(null);
+  // The document the editor was seeded with. While the draft still matches it,
+  // the user has not typed, so a disk refresh may update the editor in place
+  // instead of being treated as a conflicting change.
+  const draftBaseRef = useRef<string | null>(null);
 
   onStateChangeRef.current = onStateChange;
+  draftRef.current = draft;
+  dataRef.current = data;
+  // CodeMirror normalizes line endings to LF, so the editor works on an LF
+  // copy of the file and a save re-applies the file's own EOL. Otherwise
+  // editing a CRLF file once would rewrite every line.
+  const editorEol = data?.content.includes("\r\n") ? "\r\n" : "\n";
+  const editorSeed = data ? data.content.replace(/\r\n?/g, "\n") : "";
+  const dirty = editing && draft !== null && draft !== editorSeed;
+  dirtyRef.current = dirty;
 
   const updateDisplayMode = useCallback((nextDisplayMode: DisplayMode) => {
     viewerStateRef.current.displayMode = nextDisplayMode;
@@ -1168,6 +1160,76 @@ function TextFileViewer({
       return next;
     });
   }, []);
+
+  const canEdit = Boolean(data) && !data?.truncated;
+
+  const enterEdit = useCallback(() => {
+    if (!data) return;
+    const stashed = getFileDraft(filePath);
+    draftBaseRef.current = editorSeed;
+    setDraft(stashed?.content ?? editorSeed);
+    setEditing(true);
+    setSaveError(null);
+    setDiskChanged(false);
+    updateDisplayMode("source");
+  }, [data, editorSeed, filePath, updateDisplayMode]);
+
+  const handleDraftChange = useCallback((next: string) => {
+    setDraft(next);
+    setSaveError(null);
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    if (!editing || draft === null || !data || saving) return;
+    if (draft === editorSeed) {
+      clearFileDraft(filePath);
+      setDiskChanged(false);
+      return;
+    }
+    setSaving(true);
+    setSaveError(null);
+    const content = editorEol === "\n" ? draft : draft.replace(/\n/g, editorEol);
+    try {
+      const response = await fetch(getFileApiUrl(filePath, "write", sourceSessionId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, baseMtimeMs: data.mtimeMs }),
+      });
+      const result = await response.json() as {
+        mtimeMs?: number;
+        size?: number;
+        error?: string;
+        conflict?: boolean;
+      };
+      if (!response.ok) {
+        setSaveError(result.error ?? `HTTP ${response.status}`);
+        if (response.status === 409) setDiskChanged(true);
+        return;
+      }
+      clearFileDraft(filePath);
+      draftBaseRef.current = draft;
+      setDiskChanged(false);
+      setData((current) => current ? {
+        ...current,
+        content,
+        size: result.size ?? current.size,
+        mtimeMs: result.mtimeMs ?? current.mtimeMs,
+      } : current);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  }, [data, draft, editing, editorEol, editorSeed, filePath, saving, sourceSessionId]);
+
+  const handleDiscard = useCallback(() => {
+    clearFileDraft(filePath);
+    draftBaseRef.current = editorSeed;
+    setDraft(editorSeed);
+    setEditing(false);
+    setSaveError(null);
+    setDiskChanged(false);
+  }, [editorSeed, filePath]);
 
   useEffect(() => {
     const nextState: FileViewerState = {
@@ -1195,6 +1257,58 @@ function TextFileViewer({
     initialScrollLeft,
   ]);
 
+  // A different file resets the editor; a stashed draft for it reopens edit mode.
+  useEffect(() => {
+    setEditing(false);
+    setDraft(null);
+    setSaveError(null);
+    setDiskChanged(false);
+    draftRestoredRef.current = null;
+    draftBaseRef.current = null;
+  }, [filePath]);
+
+  useEffect(() => {
+    if (!data || draftRestoredRef.current === filePath) return;
+    draftRestoredRef.current = filePath;
+    const stashed = getFileDraft(filePath);
+    draftBaseRef.current = editorSeed;
+    if (stashed && stashed.content !== editorSeed) {
+      setDraft(stashed.content);
+      setEditing(true);
+      setSaveError(null);
+      setDiskChanged(false);
+      updateDisplayMode("source");
+    }
+  }, [data, editorSeed, filePath, updateDisplayMode]);
+
+  // An untouched editor follows a disk refresh; once the user types, the
+  // watcher marks a conflict instead (see `synchronize`).
+  useEffect(() => {
+    if (!editing || draftBaseRef.current !== draftRef.current) return;
+    draftBaseRef.current = editorSeed;
+    setDraft(editorSeed);
+  }, [editing, editorSeed]);
+
+  // A tab switch unmounts the viewer; keep the unsaved text so returning to the
+  // tab restores it instead of silently reloading from disk.
+  useEffect(() => {
+    return () => {
+      if (dirtyRef.current && draftRef.current !== null) {
+        setFileDraft(filePath, draftRef.current, dataRef.current?.mtimeMs);
+      }
+    };
+  }, [filePath]);
+
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
+
   const fetchContent = useCallback((filePath: string, offset = 0) => {
     const requestId = ++contentRequestRef.current;
     return fetch(getFileApiUrl(filePath, "read", sourceSessionId, { offset: offset || undefined }))
@@ -1217,6 +1331,15 @@ function TextFileViewer({
         return null;
       });
   }, [sourceSessionId]);
+
+  const reloadFromDisk = useCallback(() => {
+    clearFileDraft(filePath);
+    setEditing(false);
+    setDraft(null);
+    setSaveError(null);
+    setDiskChanged(false);
+    void fetchContent(filePath);
+  }, [fetchContent, filePath]);
 
   const fetchGitDiff = useCallback(async (targetPath: string) => {
     const requestId = ++gitDiffRequestRef.current;
@@ -1274,7 +1397,14 @@ function TextFileViewer({
 
     if (!watchEnabled) return;
 
-    const synchronize = () => {
+    // While the editor holds unsaved text, a disk change must not replace it;
+    // mark the conflict instead so the save can report it. Called with
+    // `fromChange` so the initial "connected" catch-up does not flag a conflict.
+    const synchronize = (fromChange = false) => {
+      if (dirtyRef.current) {
+        if (fromChange) setDiskChanged(true);
+        return;
+      }
       void fetchContent(filePath);
       void fetchGitDiff(filePath);
     };
@@ -1290,7 +1420,7 @@ function TextFileViewer({
     });
 
     es.addEventListener("change", () => {
-      synchronize();
+      synchronize(true);
       // The served preview reads from disk itself; reload it on real changes
       // only (not on "connected", which would wipe what the user typed into it).
       setHtmlPreviewRevision((revision) => revision + 1);
@@ -1357,7 +1487,9 @@ function TextFileViewer({
       : displayMode;
   const useLightweightSource = sourceLines.length > SOURCE_HIGHLIGHT_MAX_LINES
     && !(effectiveDisplayMode === "diff" && hasGitDiff)
-    && !(effectiveDisplayMode === "preview" && hasPreview);
+    && !(effectiveDisplayMode === "preview" && hasPreview)
+    // The editor renders its own document, never the read-only line views.
+    && !editing;
   // react-syntax-highlighter rebuilds every token element on each render, which
   // costs hundreds of milliseconds on large files. Cache the rendered trees so
   // unrelated re-renders (panel open/close, selection changes) reuse them as-is.
@@ -1429,7 +1561,7 @@ function TextFileViewer({
     const updateSelectedLineRange = () => {
       const root = contentRef.current;
       setSelectedLineRange((current) => {
-        const next = onMentionLines && displayMode === "source" && root
+        const next = onMentionLines && displayMode === "source" && !editing && root
           ? getSelectedSourceLineRange(root, window.getSelection())
           : null;
         // Skip no-op updates: selectionchange fires continuously while dragging,
@@ -1441,11 +1573,11 @@ function TextFileViewer({
     };
 
     updateSelectedLineRange();
-    if (!onMentionLines || displayMode !== "source") return;
+    if (!onMentionLines || displayMode !== "source" || editing) return;
 
     document.addEventListener("selectionchange", updateSelectedLineRange);
     return () => document.removeEventListener("selectionchange", updateSelectedLineRange);
-  }, [data?.content, displayMode, onMentionLines]);
+  }, [data?.content, displayMode, editing, onMentionLines]);
 
   const mentionLineRange = useCallback((lineRange: SelectedLineRange | null) => {
     if (!onMentionLines || !lineRange) return;
@@ -1457,7 +1589,7 @@ function TextFileViewer({
   }, [cwd, filePath, onMentionLines]);
 
   useEffect(() => {
-    if (!onMentionLines || displayMode !== "source") return;
+    if (!onMentionLines || displayMode !== "source" || editing) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.repeat || event.key.toLowerCase() !== "i" || (!event.metaKey && !event.ctrlKey) || event.altKey || event.shiftKey) return;
@@ -1475,7 +1607,7 @@ function TextFileViewer({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [displayMode, mentionLineRange, onMentionLines]);
+  }, [displayMode, editing, mentionLineRange, onMentionLines]);
 
   useEffect(() => {
     if (!scrollRestorePendingRef.current || loading) return;
@@ -1541,7 +1673,7 @@ function TextFileViewer({
           alignItems: "center",
           gap: 8,
           padding: "5px 12px",
-          borderBottom: "1px solid var(--border)",
+          borderBottom: "var(--hairline) solid var(--border)",
           fontSize: 11,
           color: "var(--text-dim)",
           background: "var(--bg)",
@@ -1632,6 +1764,48 @@ function TextFileViewer({
                 <MentionIcon />
               </button>
             )}
+            {canEdit && effectiveDisplayMode === "source" && !editing && (
+              <button
+                type="button"
+                onClick={enterEdit}
+                title={t("files.edit")}
+                aria-label={t("files.edit")}
+                className="file-viewer-mode-button"
+              >
+                {t("files.edit")}
+              </button>
+            )}
+            {editing && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void handleSave()}
+                  disabled={saving || !dirty}
+                  title={t("files.save")}
+                  aria-label={t("files.save")}
+                  className="file-viewer-mode-button file-viewer-save-button"
+                >
+                  {saving ? t("files.saving") : t("files.save")}
+                </button>
+                {dirty && (
+                  <span
+                    className="file-viewer-dirty-dot"
+                    title={t("files.unsaved")}
+                    aria-label={t("files.unsaved")}
+                  />
+                )}
+                <button
+                  type="button"
+                  onClick={handleDiscard}
+                  disabled={saving}
+                  title={t("files.discard")}
+                  aria-label={t("files.discard")}
+                  className="file-viewer-mode-button"
+                >
+                  {t("files.discard")}
+                </button>
+              </>
+            )}
             {effectiveDisplayMode === "source" && (
               <>
                 <button
@@ -1661,6 +1835,22 @@ function TextFileViewer({
         </div>
       </div>
 
+      {editing && diskChanged && (
+        <div className="file-viewer-edit-notice" role="status">
+          <span>{t("files.diskChanged")}</span>
+          <button
+            type="button"
+            className="file-viewer-mode-button"
+            onClick={reloadFromDisk}
+          >
+            {t("files.reloadFromDisk")}
+          </button>
+        </div>
+      )}
+      {saveError && (
+        <div className="file-viewer-edit-notice is-error" role="alert">{saveError}</div>
+      )}
+
       {data?.truncated && (
         <div
           className="file-viewer-load-more"
@@ -1670,7 +1860,7 @@ function TextFileViewer({
             justifyContent: "center",
             gap: 10,
             padding: "5px 8px",
-            border: "1px solid var(--border)",
+            border: "var(--hairline) solid var(--border)",
             borderRadius: 6,
             color: "var(--text-dim)",
             fontSize: 11,
@@ -1699,7 +1889,12 @@ function TextFileViewer({
           viewerStateRef.current.scrollTop = event.currentTarget.scrollTop;
           viewerStateRef.current.scrollLeft = event.currentTarget.scrollLeft;
         }}
-        style={{ flex: 1, overflow: "auto", background: "var(--bg)", paddingBottom: data?.truncated ? 48 : undefined }}
+        style={{
+          flex: 1,
+          overflow: editing ? "hidden" : "auto",
+          background: "var(--bg)",
+          paddingBottom: !editing && data?.truncated ? 48 : undefined,
+        }}
       >
         {effectiveDisplayMode === "diff" && hasGitDiff ? (
           <DiffView patch={gitDiff.patch!} />
@@ -1787,6 +1982,15 @@ function TextFileViewer({
               {markdownPreview}
             </ReactMarkdown>
           </div>
+        ) : editing && draft !== null ? (
+          <FileEditor
+            value={draft}
+            language={language}
+            isDark={isDark}
+            wrapLines={wrapLines}
+            onChange={handleDraftChange}
+            onSave={() => void handleSave()}
+          />
         ) : useLightweightSource ? (
           <div
             className="file-source-view is-lightweight"

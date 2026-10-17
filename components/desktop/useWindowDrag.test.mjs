@@ -15,7 +15,7 @@ import { createJiti } from "jiti";
 
 const rootDir = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const jiti = createJiti(import.meta.url, { alias: { "@": rootDir } });
-const { shouldStartDrag } = await jiti.import("./useWindowDrag.ts");
+const { shouldStartDrag } = await jiti.import("./useWindowDrag");
 
 // Builds a fake element whose `closest()` reports which of the given
 // selectors it (or an ancestor) matches — mirroring what a real click target
@@ -40,7 +40,7 @@ test("does not start a drag outside any drag region", () => {
 
 test("does not start a drag on an interactive descendant inside the region", () => {
   const noDragSelector =
-    'button, a, input, textarea, select, [role="button"], [contenteditable="true"], [data-no-drag]';
+    'button, a, input, textarea, select, [role="button"], [role="tab"], [contenteditable="true"], [data-no-drag]';
   assert.equal(
     shouldStartDrag(fakeTarget(["[data-tauri-drag-region]", noDragSelector])),
     false,

@@ -23,12 +23,12 @@ await mkdir(agentDir, { recursive: true });
 await mkdir(join(cwd, ".pi"), { recursive: true });
 
 const jiti = createJiti(import.meta.url, { alias: { "@": process.cwd() } });
-const { allowFileRoot } = await jiti.import("../../../../lib/file-access.ts");
-const { clearMcpStatuses } = await jiti.import("../../../../lib/mcp-status.ts");
-const { cancelMcpSignIn, clearMcpSignIns, mcpSignInKey } = await jiti.import("../../../../lib/mcp-sign-in.ts");
-const { POST: START } = await jiti.import("./route.ts");
-const flowRoute = await jiti.import("./[flowId]/route.ts");
-const mcpRoute = await jiti.import("../route.ts");
+const { allowFileRoot } = await jiti.import("../../../../lib/file-access");
+const { clearMcpStatuses } = await jiti.import("../../../../lib/mcp-status");
+const { cancelMcpSignIn, clearMcpSignIns, mcpSignInKey } = await jiti.import("../../../../lib/mcp-sign-in");
+const { POST: START } = await jiti.import("./route");
+const flowRoute = await jiti.import("./[flowId]/route");
+const mcpRoute = await jiti.import("../route");
 allowFileRoot(cwd);
 
 const fake = await startFakeOAuthServer();
@@ -68,7 +68,9 @@ beforeEach(async () => {
     },
   }, null, 2)}\n`);
   await writeFile(projectPath, `${JSON.stringify({
-    mcpServers: { repo: { url: fake.url, headers: { "X-Probe": `!touch ${marker} && echo probe` } } },
+    // Forward slashes: the command runs through bash, which strips the
+    // backslashes of a Windows path and writes a mangled name instead.
+    mcpServers: { repo: { url: fake.url, headers: { "X-Probe": `!touch ${marker.replace(/\\/g, "/")} && echo probe` } } },
   }, null, 2)}\n`);
   store.set(cwd, null);
 });

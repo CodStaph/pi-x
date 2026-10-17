@@ -20,6 +20,10 @@ export function isMessageGroupAnchor(message: { role?: AgentMessage["role"]; cus
 }
 
 export function isEmptyThinkingBlock(block: AssistantContentBlock, options: DisplayOptions = {}): block is ThinkingContent {
+  // A malformed message (a hole materialized by an out-of-range stream delta,
+  // or a foreign session file) can carry a null/undefined block. Treat it as
+  // not-a-thinking-block rather than dereferencing it.
+  if (!block || typeof block !== "object") return false;
   return block.type === "thinking" && !block.deferred && !options.isStreaming && block.thinking.trim() === "";
 }
 
@@ -27,7 +31,9 @@ export function getDisplayableAssistantBlocks(
   message: AssistantMessage,
   options: DisplayOptions = {},
 ): AssistantContentBlock[] {
-  return (message.content ?? []).filter((block) => !isEmptyThinkingBlock(block, options));
+  return (message.content ?? [])
+    .filter((block): block is AssistantContentBlock => Boolean(block) && typeof block === "object")
+    .filter((block) => !isEmptyThinkingBlock(block, options));
 }
 
 export function getAssistantErrorMessage(

@@ -15,7 +15,7 @@ const {
   getNextExpandedWidgetKey,
   getUpdatedExtensionWidgetKeys,
   snapshotExtensionWidgetContents,
-} = await jiti.import("./ExtensionWidgets.tsx");
+} = await jiti.import("./ExtensionWidgets");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
 
 function renderWidgets(props) {

@@ -7,6 +7,9 @@
     "urls": ["http://127.0.0.1:*/*"]
   },
   "permissions": [
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
     "dialog:allow-open",
     "dialog:allow-save",
     "clipboard-manager:allow-write-text",
@@ -14,12 +17,17 @@
     "clipboard-manager:allow-read-image",
     "notification:default",
     "allow-open-external-url",
+    "allow-show-popup-menu",
     "allow-open-path",
     "allow-reveal-item-in-dir",
+    "allow-list-apps-for-file",
+    "allow-open-path-with",
     "allow-set-close-quits",
     "allow-quit-app",
     "allow-show-main-window-cmd",
     "allow-set-ui-theme",
+    "allow-open-log-dir",
+    "allow-clear-app-cache",
     "allow-get-desktop-api-token"
   ]
 }

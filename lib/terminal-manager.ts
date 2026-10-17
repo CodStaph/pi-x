@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { homedir } from "os";
 import type { IPty } from "node-pty";
 import { samePath } from "./paths";
+import { resolveTerminalShell } from "./terminal-shells-runtime";
 
 export type TerminalEvent =
   | { type: "output"; data: string; offset: number; reset?: boolean }
@@ -71,7 +72,13 @@ function dimension(value: number, fallback: number): number {
   return Math.min(1000, Math.max(2, Number.isFinite(value) ? Math.floor(value) : fallback));
 }
 
-export function createTerminal(cwd: string, cols: number, rows: number, id: string = randomUUID()): string {
+export function createTerminal(
+  cwd: string,
+  cols: number,
+  rows: number,
+  id: string = randomUUID(),
+  shellId?: string,
+): string {
   const existing = registry().get(id);
   if (existing) {
     if (!samePath(existing.cwd, cwd)) throw new Error("Terminal belongs to a different workspace");
@@ -92,11 +99,8 @@ export function createTerminal(cwd: string, cols: number, rows: number, id: stri
       { cause: error },
     );
   }
-  const shell = process.platform === "win32"
-    ? process.env.ComSpec ?? "cmd.exe"
-    : process.env.SHELL || "/bin/sh";
-  const args = process.platform === "win32" ? [] : ["-l"];
-  const pty = spawn(shell, args, {
+  const { executable, args } = resolveTerminalShell(shellId, cwd);
+  const pty = spawn(executable, args, {
     name: "xterm-256color",
     cols: dimension(cols, 80),
     rows: dimension(rows, 24),

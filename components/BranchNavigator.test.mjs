@@ -6,11 +6,11 @@ const jiti = createJiti(import.meta.url, {
   jsx: { runtime: "automatic" },
   tsconfigPaths: true,
 });
-const { BranchNavigator, buildActivePath, compressChain, hasSessionBranches, selectTopLevelBranches } = await jiti.import("./BranchNavigator.tsx");
+const { BranchNavigator, buildActivePath, compressChain, hasSessionBranches, selectTopLevelBranches } = await jiti.import("./BranchNavigator");
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { I18nProvider } = await jiti.import("@/hooks/useI18n.tsx");
-const { enLocale } = await jiti.import("@/lib/i18n/messages/en.ts");
+const { I18nProvider } = await jiti.import("@/hooks/useI18n");
+const { enLocale } = await jiti.import("@/lib/i18n/messages/en");
 
 const msg = (id, role, text) => ({ type: "message", id, parentId: null, timestamp: "t", message: { role, content: text } });
 const info = (id) => ({ type: "session_info", id, parentId: null, timestamp: "t", name: "x" });

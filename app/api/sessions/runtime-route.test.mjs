@@ -15,15 +15,15 @@ const jiti = createJiti(import.meta.url, {
   interopDefault: true,
   moduleCache: false,
 });
-const { DELETE: deleteSession, GET: getSessionDetail, PATCH: renameSession } = await jiti.import("./[id]/route.ts");
-const { GET: getSessionList } = await jiti.import("./route.ts");
-const { GET: getRunningSessions } = await jiti.import("../agent/running/route.ts");
-const { GET: getSessionState } = await jiti.import("./[id]/state/route.ts");
+const { DELETE: deleteSession, GET: getSessionDetail, PATCH: renameSession } = await jiti.import("./[id]/route");
+const { GET: getSessionList } = await jiti.import("./route");
+const { GET: getRunningSessions } = await jiti.import("../agent/running/route");
+const { GET: getSessionState } = await jiti.import("./[id]/state/route");
 const {
   cacheSessionPath,
   invalidateSessionPathCache,
   invalidateSessionListCache,
-} = await jiti.import("../../../lib/session-reader.ts");
+} = await jiti.import("../../../lib/session-reader");
 const { SessionManager } = await jiti.import("@earendil-works/pi-coding-agent");
 
 test("list versions expose idle session creation, rename and deletion to other windows", async (t) => {

@@ -36,6 +36,13 @@ import {
 import { isDesktopApiRequestAllowed } from "@/lib/desktop-api-auth";
 import { filePathFromApiSegments, isWindowsAbsolutePath, samePath } from "@/lib/paths";
 import { hasParentDirectorySegment } from "@/lib/path-security";
+import {
+  FileWriteConflictError,
+  FileWriteTooLargeError,
+  maxWriteJsonBytes,
+  writeTextFileAtomically,
+  MAX_FILE_WRITE_BYTES,
+} from "@/lib/file-write";
 
 const IGNORED_NAMES = new Set([
   "node_modules", ".git", ".next", "dist", "build", "__pycache__",
@@ -186,6 +193,63 @@ async function allowLinkedDirectory(
   return NextResponse.json({ path: approval.target });
 }
 
+// In-place text editing. Only an existing regular file inside the allowed
+// roots is writable, and the caller's last-read mtime guards against
+// clobbering a change another process made in between.
+async function writeFileContents(
+  request: NextRequest,
+  segments: string[],
+): Promise<NextResponse> {
+  if (!hasJsonContentType(request)) {
+    return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
+  }
+  const filePath = filePathFromApiSegments(segments);
+  if (hasParentDirectorySegment(filePath)) {
+    return NextResponse.json({ error: "Access denied" }, { status: 403 });
+  }
+  const allowedRoots = await getAllowedFileRoots();
+  if (
+    !isFilePathAllowed(filePath, allowedRoots)
+    || !isExistingFilePathAllowed(filePath, allowedRoots)
+  ) {
+    return NextResponse.json({ error: "Access denied" }, { status: 403 });
+  }
+
+  let body: { content?: unknown; baseMtimeMs?: unknown } | null;
+  try {
+    body = await parseJsonWithinLimit(request, maxWriteJsonBytes()) as typeof body;
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return NextResponse.json({ error: "File is too large to edit" }, { status: 413 });
+    }
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  if (typeof body?.content !== "string") {
+    return NextResponse.json({ error: "content must be a string" }, { status: 400 });
+  }
+  const baseMtimeMs = typeof body.baseMtimeMs === "number" && Number.isFinite(body.baseMtimeMs)
+    ? body.baseMtimeMs
+    : undefined;
+
+  try {
+    return NextResponse.json(writeTextFileAtomically(filePath, body.content, baseMtimeMs));
+  } catch (error) {
+    if (error instanceof FileWriteConflictError) {
+      return NextResponse.json({ error: error.message, conflict: true, ...error.current }, { status: 409 });
+    }
+    if (error instanceof FileWriteTooLargeError) {
+      return NextResponse.json({ error: `File too large to edit (max ${MAX_FILE_WRITE_BYTES} bytes)` }, { status: 413 });
+    }
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    if (error instanceof Error && error.message === "Not a regular file") {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    throw error;
+  }
+}
+
 function parseUploadFileNames(value: unknown): string[] | null {
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) return null;
   return value;
@@ -203,6 +267,7 @@ export async function POST(
     const { path: segments } = await params;
     const type = request.nextUrl.searchParams.get("type") ?? "upload";
     if (type === "allow-link") return allowLinkedDirectory(request, segments);
+    if (type === "write") return writeFileContents(request, segments);
 
     const uploadDirectory = await getUploadDirectory(segments);
     if ("response" in uploadDirectory) return uploadDirectory.response;
@@ -697,7 +762,7 @@ export async function GET(
       }
       const chunk = readTextPreviewChunk(filePath, stat.size, offset);
       const language = getLanguage(filePath);
-      return NextResponse.json({ ...chunk, language, size: stat.size });
+      return NextResponse.json({ ...chunk, language, size: stat.size, mtimeMs: stat.mtimeMs });
     }
 
     if (type === "download") {

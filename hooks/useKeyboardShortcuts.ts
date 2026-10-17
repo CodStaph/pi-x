@@ -46,6 +46,23 @@ interface UseGlobalKeyboardShortcutsOptions {
   onNewSession?: (cwd: string) => void;
   /** The currently selected project directory (sidebar cwd). */
   activeCwd?: string | null;
+  /** Called by ⌘, (macOS) / Ctrl+, to open Settings. */
+  onOpenSettings?: () => void;
+  /** Called by \\ to close the preview panel and return focus to the composer. */
+  onCloseRightPanel?: () => void;
+}
+
+/**
+ * ⌘, / Ctrl+, opens Settings, the shortcut every desktop app's preferences use.
+ * The macOS menu bar already binds ⌘, (src-tauri/src/shell/macos_menu.rs); this
+ * covers Windows, Linux and the browser. Returns whether it took the key.
+ */
+export function handleOpenSettingsShortcut(event: KeyboardEvent, onOpenSettings: (() => void) | undefined): boolean {
+  if (event.key !== "," || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return false;
+  if (event.defaultPrevented || !onOpenSettings) return false;
+  event.preventDefault();
+  onOpenSettings();
+  return true;
 }
 
 /**
@@ -55,6 +72,7 @@ interface UseGlobalKeyboardShortcutsOptions {
  *   Esc              – stop the running agent (via module-level abort handler)
  *   ⌘N / Ctrl+N      – create a new session in the active project directory
  *                      (Ctrl+Alt+N still works for backwards familiarity)
+ *   ⌘, / Ctrl+,      – open Settings at the last section
  *
  * Note: Esc inside <textarea> or <input> is deliberately NOT handled here.
  * ChatInput manages its own Esc logic (closing slash / @ file menus, stopping
@@ -65,10 +83,32 @@ interface UseGlobalKeyboardShortcutsOptions {
 export function useGlobalKeyboardShortcuts(
   options: UseGlobalKeyboardShortcutsOptions,
 ): void {
-  const { onNewSession, activeCwd } = options;
+  const { onNewSession, activeCwd, onOpenSettings, onCloseRightPanel } = options;
 
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
+      if (handleOpenSettingsShortcut(e, onOpenSettings)) return;
+
+      // ---- \\: hide the floating preview and go back to the conversation ----
+      if (
+        e.key === "\\"
+        && !e.metaKey
+        && !e.ctrlKey
+        && !e.altKey
+        && !e.shiftKey
+        && !e.defaultPrevented
+        && onCloseRightPanel
+      ) {
+        const target = e.target as HTMLElement | null;
+        const tag = target?.tagName;
+        const composing = target?.isContentEditable;
+        const insideComposer = Boolean(target?.closest?.(".chat-input-shell"));
+        if (!insideComposer && !composing && tag !== "TEXTAREA" && tag !== "INPUT" && tag !== "SELECT") {
+          e.preventDefault();
+          onCloseRightPanel();
+        }
+      }
+
       // ---- Esc: stop agent ----
       if (e.key === "Escape") {
         handleGlobalEscape(e);
@@ -87,5 +127,5 @@ export function useGlobalKeyboardShortcuts(
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [activeCwd, onNewSession]);
+  }, [activeCwd, onNewSession, onOpenSettings, onCloseRightPanel]);
 }

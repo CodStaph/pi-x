@@ -12,7 +12,7 @@ import {
   createProjectCommandBashOperations,
   preferUserBashExtension,
 } from "./project-command-env";
-import { cacheSessionPath, getLatestModelChange, getLatestResponseModel, invalidateSessionListCache, readLatestSessionEntryId, resolveSessionPath } from "./session-reader";
+import { cacheSessionPath, getLatestModelChange, getLatestResponseModel, getSessionListVersion, invalidateSessionListCache, readLatestSessionEntryId, resolveSessionPath } from "./session-reader";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { notifySessionComplete } from "./web-push";
 import { hasActiveSessionLivenessProvider } from "./session-liveness";
@@ -46,6 +46,7 @@ import { isBuiltInSubagentsEnabled } from "./subagent-settings";
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
 import { createExactSystemPromptExtension } from "./exact-system-prompt";
+import { createArtifactGuideExtension } from "./artifact-guide-extension";
 import { createPiWebBuiltinExtensions } from "./builtin-extensions";
 import type { McpHost } from "./mcp-host";
 import { mcpPromptPreparation, type McpCommandCandidate } from "./mcp-command";
@@ -312,6 +313,7 @@ export class AgentSessionWrapper {
   private extensionWidgetGenerations = new Map<string, number>();
   private extensionWidgetsResetting = false;
   private pendingPromptCount = 0;
+  private pendingPromptPreview: { text: string; timestamp: number } | null = null;
   private activeMutatingCommands = 0;
   private sessionReplacement: "fork" | "clone" | null = null;
   private agentRunNeedsCompletion = false;
@@ -410,6 +412,10 @@ export class AgentSessionWrapper {
     this.destroy();
     invalidateSessionListCache();
     return true;
+  }
+
+  getPendingPromptPreview() {
+    return this.pendingPromptPreview;
   }
 
   isChatOnly(): boolean {
@@ -829,6 +835,10 @@ export class AgentSessionWrapper {
             if (promptSettled) return;
             promptSettled = true;
             this.pendingPromptCount = Math.max(0, this.pendingPromptCount - 1);
+            if (this.pendingPromptCount === 0) {
+              this.pendingPromptPreview = null;
+              invalidateSessionListCache();
+            }
             this.resetIdleTimer();
             // The prompt promise settles AFTER agent_end/agent_settled were
             // broadcast (the SDK resolves it only once the run is fully idle),
@@ -840,6 +850,13 @@ export class AgentSessionWrapper {
           };
 
           this.pendingPromptCount += 1;
+          // A submitted prompt belongs in the list before MCP/preflight or the
+          // SDK's first message. Composer warm-up never enters this path.
+          this.pendingPromptPreview ??= {
+            text: typeof command.message === "string" ? command.message : "",
+            timestamp: Date.now(),
+          };
+          invalidateSessionListCache();
           // Admission already makes isRunning() true; the SDK's agent_start
           // (and its broadcast) may lag behind preflight by a beat.
           notifyRunningChange();
@@ -2426,19 +2443,20 @@ export function getRpcSessionInfos(options: { includeTransient?: boolean } = {})
     >;
     const messages = entries.filter((entry): entry is SessionMessageEntry => entry.type === "message");
     const firstUserMessage = messages.find((entry) => entry.message.role === "user");
+    const pendingPrompt = session.getPendingPromptPreview?.();
     const sessionFile = manager.getSessionFile() ?? session.sessionFile;
     const persisted = Boolean(sessionFile && existsSync(sessionFile));
     const subagent = readSubagentRun(entries as unknown as SessionEntry[], header?.id ?? session.sessionId, sessionFile ?? "");
 
     // An ensure_session call creates an idle, empty runtime while the composer
-    // loads commands. Do not leak it into history before a prompt is accepted.
-    if (!persisted && !options.includeTransient && (!session.isRunning() || !firstUserMessage)) continue;
+    // loads commands. Show submitted prompts even before the SDK records them.
+    if (!persisted && !options.includeTransient && (!session.isRunning() || (!firstUserMessage && !pendingPrompt))) continue;
 
     const created = header?.timestamp
       ?? entries[0]?.timestamp
       ?? new Date().toISOString();
     const headerTimestamp = new Date(created).getTime();
-    let lastActivityMs = Number.isNaN(headerTimestamp) ? Date.now() : headerTimestamp;
+    let lastActivityMs = pendingPrompt?.timestamp ?? (Number.isNaN(headerTimestamp) ? Date.now() : headerTimestamp);
     for (const message of messages) {
       const activityMs = runtimeMessageActivityMs(message);
       if (activityMs !== undefined) lastActivityMs = Math.max(lastActivityMs, activityMs);
@@ -2452,7 +2470,7 @@ export function getRpcSessionInfos(options: { includeTransient?: boolean } = {})
       created,
       modified: new Date(lastActivityMs).toISOString(),
       messageCount: messages.length,
-      firstMessage: firstUserMessage ? runtimeMessageText(firstUserMessage) || "(no messages)" : "(no messages)",
+      firstMessage: (firstUserMessage ? runtimeMessageText(firstUserMessage) : pendingPrompt?.text) || "(no messages)",
       ...(subagent ? {
         parentSessionId: subagent.parentSessionId,
         relation: {
@@ -2516,7 +2534,8 @@ export function notifyRunningChange(): void {
     return;
   }
   const ids = getRunningRpcSessionIds();
-  const snapshot = JSON.stringify([...ids].sort());
+  // List changes must reach every window even when the running ids stay unchanged.
+  const snapshot = JSON.stringify({ ids: [...ids].sort(), version: getSessionListVersion() });
   if (snapshot === lastRunningSnapshot) return;
   lastRunningSnapshot = snapshot;
   for (const listener of listeners) {
@@ -2677,6 +2696,7 @@ export async function startRpcSession(
             extensionFactories: [
               ...(builtins?.extensions ?? []),
               createReadOnlyMcpPolicyExtension(),
+              createArtifactGuideExtension(),
               createProjectCommandBashExtension({
                 cwd: sessionCwd,
                 settings: settingsManager,

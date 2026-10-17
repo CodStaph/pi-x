@@ -3,11 +3,13 @@
 import { useEffect, useLayoutEffect, useState, useCallback, useRef, type ReactNode } from "react";
 import type { SessionInfo } from "@/lib/types";
 import { listSessionFamilies } from "@/lib/session-family";
-import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
+import { dispatchSessionRowContextMenu, SESSION_ROW_CONTEXT_MENU_EVENT } from "@/lib/session-row-context-menu";
 import { skillExpansionToCommand } from "@/lib/slash-display";
 import { workspaceKeyOf } from "@/lib/workspace-memory";
+import { useMenuRequest } from "@/hooks/useMenuRequest";
+import { canUseNativeMenu, showNativeMenu } from "@/lib/desktop-menu";
 import { useI18n } from "@/hooks/useI18n";
-import { formatRelativeTime } from "@/lib/i18n/format";
+import { formatCompactRelativeTime, formatRelativeTime } from "@/lib/i18n/format";
 import { createPortal } from "react-dom";
 import { ProjectPicker, selectProjectDirectoryNative } from "./ProjectPicker";
 import { AnimatedDropdown, PathLabel, displayCwd, getRecentProjects } from "./path-ui";
@@ -18,6 +20,8 @@ import { revealItemInDirNative } from "@/lib/desktop-native";
 import { isTauriDesktop } from "@/lib/desktop-updater";
 import { getDesktopPlatform, type DesktopPlatform } from "@/lib/desktop-window";
 import { useWindowDrag } from "./desktop";
+import { ScheduledSidebarRow } from "./scheduled/ScheduledSidebarRow";
+import { isScheduledRunSession } from "@/hooks/useScheduledTasks";
 import { SessionSearch } from "./SessionSearch";
 import { prefetchSessionData } from "@/lib/session-data-cache";
 import { isImeComposing } from "@/lib/ime";
@@ -50,6 +54,8 @@ interface Props {
   onSessionsChange?: (sessions: SessionInfo[]) => void;
   onProjectsChange?: (projectRoots: string[]) => void;
   headerControls?: ReactNode;
+  onOpenScheduled?: () => void;
+  scheduledOpen?: boolean;
 }
 
 interface WorktreeEntry {
@@ -166,7 +172,7 @@ function buildSessionTree(sessions: SessionInfo[]): SessionTreeNode[] {
   return roots;
 }
 
-export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onProjectsChange, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange, headerControls, onOpenTerminal }: Props) {
+export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onProjectsChange, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange, headerControls, onOpenTerminal, onOpenScheduled, scheduledOpen = false }: Props) {
   const { t } = useI18n();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
   // Tracked in a ref only: the version is compared against the polled value to
@@ -177,9 +183,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [error, setError] = useState<string | null>(null);
   const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
   const [homeDir, setHomeDir] = useState<string>("");
-  // On macOS the window has no native title bar — the traffic-light controls
-  // float over whatever sits in the top-left corner, which is this sidebar's
-  // header row. Push it down to clear them (see .session-sidebar-header--mac-inset).
+  // On macOS the native traffic lights float over this header. The mac-inset
+  // class keeps its control row 48px tall so it shares the lights' centre line.
   const [desktopPlatform, setDesktopPlatform] = useState<DesktopPlatform>(null);
   useEffect(() => {
     if (isTauriDesktop()) setDesktopPlatform(getDesktopPlatform());
@@ -237,7 +242,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [wtPollTick, setWtPollTick] = useState(0);
   const wtDropdownRef = useRef<HTMLDivElement>(null);
   const wtNewInputRef = useRef<HTMLInputElement>(null);
-  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => new Set());
+  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => {
+    const stored = getPrefJson<unknown>(APP_PREF_KEYS.collapsedProjects);
+    return Array.isArray(stored)
+      ? new Set(stored.filter((root): root is string => typeof root === "string"))
+      : new Set();
+  });
   const [expandedProjectSessions, setExpandedProjectSessions] = useState<Set<string>>(() => new Set());
   const [archivedProjectRoots, setArchivedProjectRoots] = useState<Set<string>>(() => {
     const stored = getPrefJson<unknown>(APP_PREF_KEYS.archivedProjects);
@@ -412,6 +422,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   }, [archivedProjectRoots]);
 
   useEffect(() => {
+    if (collapsedProjects.size === 0) removePref(APP_PREF_KEYS.collapsedProjects);
+    else setPrefJson(APP_PREF_KEYS.collapsedProjects, [...collapsedProjects]);
+  }, [collapsedProjects]);
+
+  useEffect(() => {
     // Live running status via SSE — no polling. The server pushes the current
     // set of running session ids whenever any session starts/stops working.
     let source: EventSource | null = null;
@@ -494,8 +509,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         .filter((session) => session.relation?.kind === "subagent")
         .map((session) => session.id),
     );
+    const knownScheduledIds = new Set(
+      allSessions.filter((session) => session.relation?.kind === "scheduled").map((session) => session.id),
+    );
     const completedWithNotifications = completedInBackground.filter(
-      (id) => !previousSuppressedCompletionSessionIdsRef.current.has(id) && !knownSubagentIds.has(id),
+      (id) => !previousSuppressedCompletionSessionIdsRef.current.has(id) && !knownSubagentIds.has(id)
+        && !knownScheduledIds.has(id) && !isScheduledRunSession(id),
     );
     const newlyRunning = [...runningSessionIds].filter((id) => !previous.has(id));
 
@@ -1029,7 +1048,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     setProjectMenuPos(null);
   }, []);
 
-  const openProjectMenu = useCallback((e: React.MouseEvent<HTMLButtonElement>, projectRoot: string) => {
+  const beginProjectMenuRequest = useMenuRequest(selectedCwd);
+  const openProjectMenu = useCallback(async (e: React.MouseEvent<HTMLButtonElement>, projectRoot: string) => {
+    const isCurrent = beginProjectMenuRequest();
     e.stopPropagation();
     if (projectMenu?.root === projectRoot) {
       setProjectMenu(null);
@@ -1044,19 +1065,33 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     const top = rect.bottom + menuHeight > window.innerHeight - 8
       ? rect.top - menuHeight - 4
       : rect.bottom + 4;
-    setProjectMenu({ root: projectRoot });
-    setProjectMenuPos({ top, left });
+    const restoreMenu = () => {
+      if (!isCurrent()) return;
+      setProjectMenu({ root: projectRoot });
+      setProjectMenuPos({ top, left });
+      setProjectBranchMenu(null);
+      setProjectRevealError(null);
+    };
+    setProjectMenu(null);
     setProjectBranchMenu(null);
     setProjectRevealError(null);
-  }, [projectMenu]);
+    if (canUseNativeMenu() && await showNativeMenu([
+      { label: t("sidebar.switchBranch"), onSelect: () => { if (!isCurrent()) return; restoreMenu(); return openProjectBranchMenu(projectRoot); } },
+      ...(onOpenTerminal ? [{ label: t("sidebar.openTerminalHere"), onSelect: () => { if (isCurrent()) return onOpenTerminal(projectRoot); } }] : []),
+      { label: revealProjectLabel, onSelect: () => { if (!isCurrent()) return; restoreMenu(); return revealProjectInFileManager(projectRoot); } },
+      { label: t("sidebar.archiveProject"), onSelect: () => { if (isCurrent()) return archiveProject(projectRoot); } },
+    ], { x: left, y: top })) return;
+    restoreMenu();
+  }, [projectMenu, t, onOpenTerminal, openProjectBranchMenu, revealProjectLabel, revealProjectInFileManager, archiveProject, beginProjectMenuRequest]);
 
   // Phase A: project tree — groups sessions by project root. Sorting is
   const trimmedSessionQuery = sessionQuery.trim().toLowerCase();
+  const treeSessions = allSessions.filter((session) => session.relation?.kind !== "scheduled");
   const filteredSessions = trimmedSessionQuery
-    ? allSessions.filter((session) =>
+    ? treeSessions.filter((session) =>
         (session.name ?? "").toLowerCase().includes(trimmedSessionQuery)
         || session.firstMessage.toLowerCase().includes(trimmedSessionQuery))
-    : allSessions;
+    : treeSessions;
   const sessionFamilies = listSessionFamilies(filteredSessions);
   const allProjects = groupByProject(filteredSessions, { runningIds: runningSessionIds, unreadIds: unreadSessionIds });
   const activeProjects = allProjects.filter((group) => !archivedProjectRoots.has(group.projectRoot));
@@ -1137,44 +1172,59 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       if (!isActive) setSelectedCwd(group.projectRoot);
     };
 
+    const isMenuOpen = projectMenu?.root === group.projectRoot;
+    const rowTitle = branchSubtitle ? `${group.projectRoot} · ${branchSubtitle}` : group.projectRoot;
+
     return (
       <div key={group.projectRoot} className={`sidebar-project-tree-group${isCollapsed ? " is-collapsed" : ""}${isActive ? " is-active" : ""}`}>
-        <div className="sidebar-project-tree-row">
+        <div className={`sidebar-project-tree-row${isMenuOpen ? " is-menu-open" : ""}`}>
           <button
             type="button"
             className="sidebar-project-tree-row-main"
             onClick={toggleCollapse}
             aria-expanded={!isCollapsed}
-            title={group.projectRoot}
+            title={rowTitle}
           >
             <span className="sidebar-project-tree-folder" aria-hidden="true">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+              {/* Closed folder vs. folder with its flap lifted; the closed one
+                  carries a faint fill so the pair reads as shut / open. */}
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
                 {isCollapsed ? (
-                  <path d="M3.5 6.5a1.5 1.5 0 0 1 1.5-1.5h4l2 2h8a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5Z" />
+                  <path
+                    d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+                    fill="currentColor"
+                    fillOpacity="0.1"
+                  />
                 ) : (
-                  <path d="M3.5 7.5h6l2 2H21l-2 9.5H5a1.5 1.5 0 0 1-1.5-1.5Z" />
+                  <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
                 )}
               </svg>
             </span>
             <span className="sidebar-project-tree-name">{group.displayName}</span>
-            {branchSubtitle && (
-              <span className="sidebar-project-tree-branch" title={branchSubtitle}>
-                {branchSubtitle}
+            {/* A folded project hides its rows, so the count (and any running
+                or unread chips) must stay readable on the header itself. */}
+            {isCollapsed && (
+              <span className="sidebar-project-tree-count" title={t("sidebar.sessionCount", { count: groupTree.length })}>
+                ({groupTree.length})
               </span>
             )}
-            <span className="sidebar-project-tree-meta">
-              {runningCount > 0 && (
-                <span className="sidebar-project-tree-chip is-running" title={t("sidebar.runningCount", { count: runningCount })}>
-                  {runningCount}
-                </span>
-              )}
-              {unreadCount > 0 && (
-                <span className="sidebar-project-tree-chip is-unread" title={t("sidebar.unreadCount", { count: unreadCount })}>
-                  {unreadCount}
-                </span>
-              )}
-            </span>
+            {isCollapsed && (
+              <span className="sidebar-project-tree-meta">
+                {runningCount > 0 && (
+                  <span className="sidebar-project-tree-chip is-running" title={t("sidebar.runningCount", { count: runningCount })}>
+                    {runningCount}
+                  </span>
+                )}
+                {unreadCount > 0 && (
+                  <span className="sidebar-project-tree-chip is-unread" title={t("sidebar.unreadCount", { count: unreadCount })}>
+                    {unreadCount}
+                  </span>
+                )}
+              </span>
+            )}
           </button>
+          {/* Hover-only overlay at the row's trailing edge: it covers the tail of a
+              long name instead of reserving width the rest of the time. */}
           <div className="sidebar-project-tree-row-actions" data-no-drag>
             <button
               type="button"
@@ -1256,12 +1306,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         {...windowDrag}
         style={{
           padding: "12px 10px 10px",
-          borderBottom: "1px solid var(--border)",
+          borderBottom: "var(--hairline) solid var(--border)",
           flexShrink: 0,
         }}
       >
-        {/* Window-chrome controls row: right-aligned (theme + collapse); on macOS
-            the traffic lights share this row's left side. */}
+        {/* Window-chrome controls row: right-aligned (theme + collapse). On
+            macOS the native traffic lights share the row's 48px centre line. */}
         {headerControls && (
           <div className="sidebar-controls-row">
             {headerControls}
@@ -1283,6 +1333,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           </span>
           {t("sidebar.newChat")}
         </button>
+
+        {onOpenScheduled && <ScheduledSidebarRow active={scheduledOpen} onOpen={onOpenScheduled} />}
 
         {/* Row 2: current folder — flat row */}
         <div className="sidebar-folder-row" data-no-drag style={{ display: showLegacyHeaderProjectRows ? "flex" : "none", alignItems: "center", gap: 2 }}>
@@ -1333,7 +1385,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 </svg>
                 <PathLabel
                   text={currentWt ? (currentWt.branch ?? displayCwd(currentWt.path, homeDir)) : "…"}
-                  style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--text)" }}
+                  style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text)" }}
                 />
                 {currentWorktree?.isMain && (
                    <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 10 }}>{t("sidebar.main")}</span>
@@ -1358,14 +1410,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   right: 0,
                   zIndex: 100,
                   background: "var(--bg)",
-                  border: "1px solid var(--border)",
+                  border: "var(--hairline) solid var(--border)",
                   borderRadius: 8,
                   boxShadow: "0 6px 20px rgba(0,0,0,0.10)",
                   overflow: "hidden",
                 }}
               >
                   {showWtFilter && (
-                    <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                    <div style={{ padding: "6px 8px", borderBottom: "var(--hairline) solid var(--border)" }}>
                       <input
                         value={wtFilter}
                         onChange={(e) => setWtFilter(e.target.value)}
@@ -1382,7 +1434,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                           fontSize: 11,
                           fontFamily: "var(--font-mono)",
                           padding: "5px 8px",
-                          border: "1px solid var(--border)",
+                          border: "var(--hairline) solid var(--border)",
                           borderRadius: 5,
                           outline: "none",
                           background: "var(--bg)",
@@ -1398,7 +1450,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                       if (wtConfirmRemove?.path === wt.path) {
                         const isForce = wtConfirmRemove.force;
                         return (
-                          <div key={wt.path} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", borderBottom: "1px solid var(--border)", background: "color-mix(in srgb, var(--danger) 6%, transparent)" }}>
+                          <div key={wt.path} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", borderBottom: "var(--hairline) solid var(--border)", background: "color-mix(in srgb, var(--danger) 6%, transparent)" }}>
                             <span style={{ flex: 1, fontSize: 11, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                               {isForce ? t("sidebar.forceRemoveCheckout") : t("sidebar.confirmRemoveWorktree")}
                             </span>
@@ -1411,7 +1463,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                             </button>
                             <button
                               onClick={() => setWtConfirmRemove(null)}
-                              style={{ padding: "3px 9px", background: "var(--bg-hover)", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text-muted)", fontSize: 11, cursor: "pointer", flexShrink: 0 }}
+                              style={{ padding: "3px 9px", background: "var(--bg-hover)", border: "var(--hairline) solid var(--border)", borderRadius: 5, color: "var(--text-muted)", fontSize: 11, cursor: "pointer", flexShrink: 0 }}
                             >
                               {t("sidebar.cancel")}
                             </button>
@@ -1422,7 +1474,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                         <div
                           key={wt.path}
                           className="wt-row"
-                          style={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--border)" }}
+                          style={{ display: "flex", alignItems: "center", borderBottom: "var(--hairline) solid var(--border)" }}
                         >
                           <button
                             onClick={() => {
@@ -1518,7 +1570,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                       ...wtRemoteBranches.map((name) => ({ name, remote: true })),
                     ];
                     return (
-                      <div style={{ borderTop: "1px solid var(--border)" }}>
+                      <div style={{ borderTop: "var(--hairline) solid var(--border)" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 8px 3px" }}>
                           <span style={{ flex: 1, fontSize: 10, fontWeight: 600, letterSpacing: "0.03em", color: "var(--text-dim)" }}>{t("sidebar.switchBranch")}</span>
                           <button
@@ -1588,7 +1640,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                                   </span>
                                 )}
                                 {remote && !holder && (
-                                  <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 9.5 }}>{t("sidebar.remoteBranchTag")}</span>
+                                  <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 10 }}>{t("sidebar.remoteBranchTag")}</span>
                                 )}
                                 {switching && (
                                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink: 0, animation: "spin 0.8s linear infinite" }}>
@@ -1660,7 +1712,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                           fontSize: 11,
                           fontFamily: "var(--font-mono)",
                           padding: "5px 8px",
-                          border: "1px solid var(--accent)",
+                          border: "var(--hairline) solid var(--accent)",
                           borderRadius: 5,
                           outline: "none",
                           background: "var(--bg)",
@@ -1722,7 +1774,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                             flex: 1,
                             padding: "4px 0",
                             background: "var(--bg-hover)",
-                            border: "1px solid var(--border)",
+                            border: "var(--hairline) solid var(--border)",
                             borderRadius: 5,
                             color: "var(--text-muted)",
                             fontSize: 11,
@@ -1767,7 +1819,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               <circle cx="6" cy="18" r="3" />
               <path d="M18 9a9 9 0 0 1-9 9" />
             </svg>
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11.5 }}>{inactiveWorktreeSelector.label}</span>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>{inactiveWorktreeSelector.label}</span>
           </button>
         )}
       </div>
@@ -1885,7 +1937,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 title={t("sidebar.moreActions")}
                 aria-label={t("sidebar.moreActions")}
                 onClick={() => {
-                  if (collapsedProjects.size === 0) {
+                  if (allProjects.some((g) => !collapsedProjects.has(g.projectRoot))) {
                     setCollapsedProjects(new Set(allProjects.map((g) => g.projectRoot)));
                   } else {
                     setCollapsedProjects(new Set());
@@ -2338,7 +2390,9 @@ function SessionItem({
 
   // "…" menu: fixed-position portal so the sidebar's overflow/backdrop-filter can't clip it
   const MENU_WIDTH = 190;
-  const toggleMenu = useCallback((e: React.MouseEvent) => {
+  const beginSessionMenuRequest = useMenuRequest(session.id);
+  const toggleMenu = useCallback(async (e: React.MouseEvent) => {
+    const isCurrent = beginSessionMenuRequest();
     e.stopPropagation();
     if (menuOpen) { setMenuOpen(false); return; }
     const rect = e.currentTarget.getBoundingClientRect();
@@ -2346,9 +2400,14 @@ function SessionItem({
     const left = Math.max(8, Math.min(rect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8));
     let top = rect.bottom + 4;
     if (top + estHeight > window.innerHeight - 8) top = rect.top - estHeight - 4;
+    if (canUseNativeMenu() && await showNativeMenu([
+      { label: t("sidebar.rename"), disabled: !!session.transient, onSelect: () => { if (isCurrent()) startRename(); } },
+      { label: t("sidebar.delete"), disabled: !!session.transient, onSelect: () => { if (isCurrent()) setConfirmDelete(true); } },
+    ], { x: left, y: top })) return;
+    if (!isCurrent()) return;
     setMenuPos({ top, left });
     setMenuOpen(true);
-  }, [menuOpen]);
+  }, [menuOpen, session.transient, startRename, t, beginSessionMenuRequest]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -2381,6 +2440,28 @@ function SessionItem({
     e.stopPropagation();
     setConfirmDelete(false);
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const handle = (event: WindowEventMap[typeof SESSION_ROW_CONTEXT_MENU_EVENT]) => {
+      if (event.defaultPrevented || event.detail.id !== session.id || confirmDelete || renaming || !isTauriDesktop()) return;
+      event.preventDefault();
+      const isCurrent = beginSessionMenuRequest();
+      const { clientX: x, clientY: y } = event.detail;
+      setMenuOpen(false);
+      void showNativeMenu([
+        { label: t("sidebar.rename"), disabled: !!session.transient, onSelect: () => { if (active && isCurrent()) startRename(); } },
+        { label: t("sidebar.delete"), disabled: !!session.transient, onSelect: () => { if (active && isCurrent()) setConfirmDelete(true); } },
+      ], { x, y }).then((shown) => {
+        if (!shown && active && isCurrent()) {
+          setMenuPos({ left: Math.max(8, Math.min(x, window.innerWidth - MENU_WIDTH - 8)), top: Math.max(8, Math.min(y, window.innerHeight - 124 - 8)) });
+          setMenuOpen(true);
+        }
+      });
+    };
+    window.addEventListener(SESSION_ROW_CONTEXT_MENU_EVENT, handle);
+    return () => { active = false; window.removeEventListener(SESSION_ROW_CONTEXT_MENU_EVENT, handle); };
+  }, [confirmDelete, renaming, session.id, session.transient, startRename, t, beginSessionMenuRequest]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const handled = dispatchSessionRowContextMenu({
@@ -2415,7 +2496,7 @@ function SessionItem({
         height: SESSION_LIST_ITEM_HEIGHT,
         display: "flex",
         alignItems: "center",
-        paddingLeft: 14,
+        paddingLeft: 11,
         paddingRight: 8,
         cursor: confirmDelete || renaming ? "default" : "pointer",
         background: confirmDelete
@@ -2461,7 +2542,7 @@ function SessionItem({
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center",
                 height: 26, padding: "0 9px",
-                background: "var(--bg)", border: "1px solid var(--border)",
+                background: "var(--bg)", border: "var(--hairline) solid var(--border)",
                 borderRadius: 6, color: "var(--text-muted)",
                 cursor: "pointer", fontSize: 12, fontWeight: 500,
                 whiteSpace: "nowrap",
@@ -2488,7 +2569,7 @@ function SessionItem({
             flex: 1,
             fontSize: 12,
             padding: "3px 8px",
-            border: "1px solid var(--accent)",
+            border: "var(--hairline) solid var(--accent)",
             borderRadius: 5,
             outline: "none",
             background: "var(--bg)",
@@ -2512,7 +2593,7 @@ function SessionItem({
               <path d="M9 11h.01M15 11h.01M9 15h6M12 7V4M10 4h4" />
             </svg>
           ) : (
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+            <svg className="session-item-glyph" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
               <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
             </svg>
           )}
@@ -2526,7 +2607,7 @@ function SessionItem({
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
               fontSize: 13,
-              fontWeight: isSelected ? 500 : 400,
+              fontWeight: 400,
               lineHeight: 1.4,
               color: "var(--text)",
             }}
@@ -2554,34 +2635,59 @@ function SessionItem({
             </button>
           )}
 
-          {/* Action buttons — shown on hover (or always on touch devices,
-              which have no hover); transient runtime rows expose no
-              disk-backed actions. Also stays up for selection/open menu. */}
-          {(hovered || touchMode) && !session.transient && (
-            <button
-              ref={menuButtonRef}
-              onClick={toggleMenu}
-              title={t("sidebar.moreActions")}
-              aria-label={t("sidebar.moreActions")}
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
+          {/* Trailing slot: the row's last-activity time at rest, swapped in
+              place for the "…" action button on hover (always the button on
+              touch devices, which have no hover, and while its menu is open,
+              since the pointer then sits on the portal). Transient runtime
+              rows expose no disk-backed actions and have no reliable time.
+              The slot keeps one fixed width so the title never reflows. */}
+          {!session.transient && (
+            <div
+              className="session-item-trailing"
               style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                width: 24, height: 24, padding: 0, flexShrink: 0,
-                background: menuOpen ? "var(--bg-selected)" : "none",
-                border: "none", borderRadius: 6,
-                color: "var(--text-muted)", cursor: "pointer",
-                transition: "background 0.12s, color 0.12s",
+                display: "flex", alignItems: "center", justifyContent: "flex-end",
+                width: 28, height: 24, flexShrink: 0,
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-selected)"; e.currentTarget.style.color = "var(--text)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = menuOpen ? "var(--bg-selected)" : "none"; e.currentTarget.style.color = "var(--text-muted)"; }}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <circle cx="5" cy="12" r="1.7" />
-                <circle cx="12" cy="12" r="1.7" />
-                <circle cx="19" cy="12" r="1.7" />
-              </svg>
-            </button>
+              {hovered || touchMode || menuOpen ? (
+                <button
+                  ref={menuButtonRef}
+                  onClick={toggleMenu}
+                  title={t("sidebar.moreActions")}
+                  aria-label={t("sidebar.moreActions")}
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 24, height: 24, padding: 0, flexShrink: 0,
+                    background: menuOpen ? "var(--bg-selected)" : "none",
+                    border: "none", borderRadius: 6,
+                    color: "var(--text-muted)", cursor: "pointer",
+                    transition: "background 0.12s, color 0.12s",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-selected)"; e.currentTarget.style.color = "var(--text)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = menuOpen ? "var(--bg-selected)" : "none"; e.currentTarget.style.color = "var(--text-muted)"; }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <circle cx="5" cy="12" r="1.7" />
+                    <circle cx="12" cy="12" r="1.7" />
+                    <circle cx="19" cy="12" r="1.7" />
+                  </svg>
+                </button>
+              ) : (
+                <span
+                  className="session-item-time"
+                  title={formatRelativeTime(session.modified, locale)}
+                  style={{
+                    fontSize: 11, lineHeight: 1, color: "var(--text-dim)",
+                    whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums",
+                    paddingRight: 2,
+                  }}
+                >
+                  {formatCompactRelativeTime(session.modified, locale)}
+                </span>
+              )}
+            </div>
           )}
 
           {menuOpen && menuPos && createPortal(
@@ -2604,7 +2710,7 @@ function SessionItem({
                   width: "100%", height: 30, padding: "0 8px",
                   background: "transparent", border: 0, borderRadius: 7,
                   color: "var(--text)", cursor: "pointer",
-                  fontSize: 12.5, textAlign: "left",
+                  fontSize: 13, textAlign: "left",
                 }}
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
@@ -2626,7 +2732,7 @@ function SessionItem({
                   width: "100%", height: 30, padding: "0 8px",
                   background: "transparent", border: 0, borderRadius: 7,
                   color: "var(--danger)", cursor: "pointer",
-                  fontSize: 12.5, textAlign: "left",
+                  fontSize: 13, textAlign: "left",
                 }}
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
@@ -2642,6 +2748,9 @@ function SessionItem({
                 <div title={session.created}>
                   {formatRelativeTime(session.modified, locale)} · {t("sidebar.messagesCount", { count: session.messageCount })}
                 </div>
+                {(session.compactionCount ?? 0) > 0 && (
+                  <div>{t("sidebar.compactionCount", { count: session.compactionCount ?? 0 })}</div>
+                )}
                 {session.worktreeBranch && (
                   <div title={`Worktree: ${session.cwd}`} style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--accent)", minWidth: 0 }}>
                     <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
@@ -2666,7 +2775,7 @@ function SessionItem({
                 zIndex: 1000, maxWidth: "80vw",
                 background: "color-mix(in srgb, var(--bg-panel) 94%, #000)",
                 color: "var(--danger)",
-                border: "1px solid color-mix(in srgb, var(--danger) 35%, transparent)",
+                border: "var(--hairline) solid color-mix(in srgb, var(--danger) 35%, transparent)",
                 padding: "8px 14px", borderRadius: 8, fontSize: 12,
                 boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
                 overflowWrap: "anywhere",

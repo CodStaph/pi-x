@@ -68,7 +68,10 @@ async function git(cwd: string, args: string[], timeoutMs = 10_000): Promise<str
 
 function realPathOrSelf(filePath: string): string {
   try {
-    return realpathSync(filePath);
+    // `.native` resolves Windows 8.3 short names (`ADMINI~1` → `Administrator`),
+    // which `realpathSync` leaves alone. Git always prints the long form, so
+    // without this a cwd under a short path never matches `git worktree list`.
+    return realpathSync.native(filePath);
   } catch {
     return filePath;
   }

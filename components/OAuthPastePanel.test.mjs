@@ -9,7 +9,7 @@ const jiti = createJiti(import.meta.url, {
 });
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { OAuthPastePanel, oauthPasteKeySubmits } = await jiti.import("./OAuthPastePanel.tsx");
+const { OAuthPastePanel, oauthPasteKeySubmits } = await jiti.import("./OAuthPastePanel");
 const modelsSource = await readFile(new URL("./ModelsConfig.tsx", import.meta.url), "utf8");
 
 function render(props) {

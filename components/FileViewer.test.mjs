@@ -42,7 +42,7 @@ test("lightweight source rows are skipped for highlighted, diff, and preview vie
     ),
   ).map((node) => node.getText(file)).join("\n");
   const { outputText } = ts.transpileModule(`
-    return (data, displayMode, hasGitDiff = false, isDeletedDiff = false, wrapLines = false) => {
+    return (data, displayMode, hasGitDiff = false, isDeletedDiff = false, wrapLines = false, editing = false) => {
       const SOURCE_HIGHLIGHT_MAX_LINES = 1_000;
       const FILE_LINE_NUMBER_STYLE = {};
       ${calculations}
@@ -65,6 +65,8 @@ test("lightweight source rows are skipped for highlighted, diff, and preview vie
     assert.equal(rows[0].props.children[1].props.children, "line");
   }
   assert.equal(render(large, "source", false, false, true)[0].props.children[1].props.style.whiteSpace, "pre-wrap");
+  // Opening the editor must bypass the read-only line views entirely.
+  assert.equal(render(large, "source", false, false, false, true), null);
 });
 
 test("markdown preview links carry PDF page fragments", () => {

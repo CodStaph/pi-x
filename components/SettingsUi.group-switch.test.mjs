@@ -8,7 +8,7 @@ const jiti = createJiti(import.meta.url, {
 });
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { ConfigSidebarGroupLabel, ConfigSidebarGroupStatus, ConfigSidebarGroupSwitch } = await jiti.import("./SettingsUi.tsx");
+const { ConfigSidebarGroupLabel, ConfigSidebarGroupStatus, ConfigSidebarGroupSwitch } = await jiti.import("./SettingsUi");
 
 function renderSwitch(enabled, total) {
   return renderToStaticMarkup(React.createElement(ConfigSidebarGroupLabel, {

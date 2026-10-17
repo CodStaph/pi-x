@@ -234,7 +234,10 @@ async function exportSession(filePath: string, outputPath: string): Promise<void
   if (!packageDir) throw new Error("pi CLI not found");
 
   const exporterUrl = pathToFileURL(join(packageDir, "dist", "core", "export-html", "index.js")).href;
-  const { exportFromFile } = (await import(exporterUrl)) as ExportHtmlModule;
+  // Computed from the runtime package dir, so webpack cannot statically resolve
+  // it; webpackIgnore keeps the native import() and drops the "Critical
+  // dependency" build warning. This is only the fallback when cli.js is absent.
+  const { exportFromFile } = (await import(/* webpackIgnore: true */ exporterUrl)) as ExportHtmlModule;
   await exportFromFile(filePath, outputPath);
 }
 

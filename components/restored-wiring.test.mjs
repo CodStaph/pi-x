@@ -8,7 +8,7 @@ import { createJiti } from "jiti";
 const jiti = createJiti(import.meta.url, { jsx: { runtime: "automatic" }, tsconfigPaths: true });
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { ModelScopeWarningBanner } = await jiti.import("./ChatInput.tsx");
+const { ModelScopeWarningBanner } = await jiti.import("./ChatInput");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
 const read = (file) => readFile(new URL(file, import.meta.url), "utf8");
 

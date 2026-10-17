@@ -10,7 +10,7 @@ const {
   filterEnabledModels,
   isLastEnabledModel,
   providerBadgeLabel,
-} = await jiti.import("./enabled-models-helpers.ts");
+} = await jiti.import("./enabled-models-helpers");
 
 const source = await readFile(new URL("./EnabledModelsSection.tsx", import.meta.url), "utf8");
 const modelsConfigSource = await readFile(new URL("./ModelsConfig.tsx", import.meta.url), "utf8");

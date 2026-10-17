@@ -3,10 +3,18 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
+import { useAppBackground } from "@/hooks/useAppBackground";
+import { useCostCurrency } from "@/hooks/useCostCurrency";
 import { useDiffViewMode } from "@/hooks/useDiffViewMode";
 import { PRODUCT_NAME } from "@/lib/branding";
 import { openPathNative, isTauriDesktop } from "@/lib/desktop-native";
+import { applyUiPlatform } from "@/lib/ui-platform";
 import { THEME_OPTIONS } from "@/lib/theme";
+import {
+  pickBackgroundImageFile,
+  prepareBackgroundImageDataUrl,
+} from "@/lib/app-background";
+import { COST_CURRENCY_MODES, type ExchangeRateProvider } from "@/lib/cost-currency";
 import { ThemeIcon } from "./ThemeIcon";
 import {
   CHAT_CONTENT_WIDTH_DEFAULT,
@@ -19,7 +27,7 @@ import {
 } from "@/hooks/useChatAppearance";
 import { useEnterSendMode, setEnterSendMode } from "@/hooks/useEnterSendMode";
 import { sendAgentCommand } from "@/lib/agent-client";
-import type { ProjectTrustStatus, ToolSettingsResponse } from "@/lib/api-types";
+import type { LocalizedOutputResponse, ProjectTrustStatus, ToolSettingsResponse } from "@/lib/api-types";
 import {
   setLastSettingsSection,
   settingsSectionRequiresProject,
@@ -39,6 +47,7 @@ import { AppUpdatesSection } from "./AppUpdatesSection";
 import { DesktopAppSection } from "./desktop";
 import { McpConfig } from "./McpConfig";
 import { ConfigButton, ConfigSwitch } from "./SettingsUi";
+import { ArtifactsSettingRow } from "./ArtifactsSettingRow";
 
 interface Props {
   cwd: string | null;
@@ -48,6 +57,9 @@ interface Props {
   onSessionReloaded: () => void;
   quoteSelectionEnabled: boolean;
   onQuoteSelectionChange: (enabled: boolean) => void;
+  /** The completion chime; it used to be a speaker button in the composer row. */
+  soundEnabled: boolean;
+  onSoundToggle: () => void;
   /** The page's trust status for `cwd`; Settings › MCP reloads when it changes, as after trusting. */
   projectTrust?: ProjectTrustStatus | null;
   /** Opens the page's trust dialog for `cwd`, above Settings; Settings › MCP's trust notice offers it. */
@@ -84,12 +96,21 @@ function GeneralSettings({
   onSessionReloaded,
   quoteSelectionEnabled,
   onQuoteSelectionChange,
+  soundEnabled,
+  onSoundToggle,
   onBusyChange,
-}: Pick<Props, "sessionId" | "onSessionReloaded" | "quoteSelectionEnabled" | "onQuoteSelectionChange"> & {
+}: Pick<Props, "sessionId" | "onSessionReloaded" | "quoteSelectionEnabled" | "onQuoteSelectionChange" | "soundEnabled" | "onSoundToggle"> & {
   onBusyChange: (busy: boolean) => void;
 }) {
   const { locale, setLocale, supportedLocales, t } = useI18n();
   const { preference, setThemePreference } = useTheme();
+  const {
+    image: backgroundImage,
+    options: backgroundOptions,
+    setImage: setBackgroundImage,
+    updateOptions: updateBackgroundOptions,
+  } = useAppBackground();
+  const costCurrency = useCostCurrency();
   const { mode: diffViewMode, setMode: setDiffViewMode } = useDiffViewMode();
   const { width: chatContentWidth, setWidth: setChatContentWidth, fontSize, setFontSize } = useChatAppearance();
   const desktop = isTauriDesktop();
@@ -105,6 +126,11 @@ function GeneralSettings({
   const [logoutError, setLogoutError] = useState("");
   const [customCssBusy, setCustomCssBusy] = useState(false);
   const [customCssError, setCustomCssError] = useState<string | null>(null);
+  const [backgroundBusy, setBackgroundBusy] = useState(false);
+  const [backgroundError, setBackgroundError] = useState<string | null>(null);
+  const [localizedOutput, setLocalizedOutput] = useState<LocalizedOutputResponse | null>(null);
+  const [localizedOutputSaving, setLocalizedOutputSaving] = useState(false);
+  const [localizedOutputError, setLocalizedOutputError] = useState<string | null>(null);
 
   useEffect(() => {
     setThinkingExpanded(isThinkingExpandedByDefault());
@@ -113,6 +139,45 @@ function GeneralSettings({
       .then((data: { enabled?: boolean } | null) => setWebAuthEnabled(data?.enabled === true))
       .catch(() => {});
   }, []);
+
+  // The switch is server state (the managed block in APPEND_SYSTEM.md), so it
+  // loads from the route rather than localStorage.
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/localized-output")
+      .then(async (response) => {
+        const data = await response.json() as LocalizedOutputResponse & { error?: string };
+        if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
+        if (!cancelled) setLocalizedOutput(data);
+      })
+      .catch((cause) => {
+        if (!cancelled) setLocalizedOutputError(cause instanceof Error ? cause.message : String(cause));
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const saveLocalizedOutput = async (enabled: boolean, nextLocale: typeof locale) => {
+    setLocalizedOutputSaving(true);
+    setLocalizedOutputError(null);
+    try {
+      const response = await fetch("/api/localized-output", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled, locale: nextLocale }),
+      });
+      const data = await response.json() as LocalizedOutputResponse & { error?: string };
+      if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
+      setLocalizedOutput(data);
+      if (sessionId) {
+        await sendAgentCommand(sessionId, { type: "reload" });
+        onSessionReloaded();
+      }
+    } catch (cause) {
+      setLocalizedOutputError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setLocalizedOutputSaving(false);
+    }
+  };
 
   const logOut = async () => {
     setLoggingOut(true);
@@ -204,6 +269,31 @@ function GeneralSettings({
     }
   };
 
+  const chooseBackgroundImage = async () => {
+    setBackgroundError(null);
+    try {
+      const file = await pickBackgroundImageFile();
+      if (!file) return;
+      setBackgroundBusy(true);
+      const dataUrl = await prepareBackgroundImageDataUrl(file);
+      setBackgroundImage(dataUrl);
+    } catch (error) {
+      console.error("Failed to set background image:", error);
+      setBackgroundError(
+        error instanceof Error && error.message === "background-image-too-large"
+          ? t("appSettings.backgroundImageTooLarge")
+          : t("appSettings.backgroundImageFailed"),
+      );
+    } finally {
+      setBackgroundBusy(false);
+    }
+  };
+
+  const removeBackgroundImage = () => {
+    setBackgroundError(null);
+    setBackgroundImage(null);
+  };
+
   return (
     <div className="settings-general">
       <h2 className="settings-general-title">{t("settings.general")}</h2>
@@ -213,54 +303,114 @@ function GeneralSettings({
         <p className="settings-general-tagline">{t("appSettings.taglineDetails")}</p>
       </div>
 
-      <AppUpdatesSection onBusyChange={onBusyChange} />
-
       <div className="settings-general-columns">
         <div className="settings-general-col">
+          <AppUpdatesSection onBusyChange={onBusyChange} />
+
           <section className="settings-general-section">
-            <h3 className="settings-general-heading">{t("settings.appearance")}</h3>
-            <div role="radiogroup" aria-label={t("settings.appearance")} className="settings-theme-options">
-              {THEME_OPTIONS.map((option) => {
-                const selected = preference === option.id;
+            <h3 className="settings-general-heading">{t("common.language")}</h3>
+            <div role="radiogroup" aria-label={t("common.language")} className="settings-language-options">
+              {supportedLocales.map((plugin) => {
+                const selected = locale === plugin.id;
                 return (
-                  <label
-                    key={option.id}
-                    className="settings-theme-option"
+                  <button
+                    key={plugin.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => {
+                      setLocale(plugin.id as typeof locale);
+                      if (localizedOutput?.enabled) void saveLocalizedOutput(true, plugin.id as typeof locale);
+                    }}
+                    className="settings-language-option"
                   >
-                    <input
-                      type="radio"
-                      name="theme"
-                      value={option.id}
-                      checked={selected}
-                      onChange={() => setThemePreference(option.id)}
-                      className="sr-only"
-                    />
-                    <ThemeIcon preference={option.id} />
-                    <span className="settings-theme-option-label">{t(option.label)}</span>
-                  </label>
+                    <span className="settings-language-radio">
+                      {selected && <span className="settings-language-radio-dot" />}
+                    </span>
+                    <span className="settings-language-label">{plugin.label}</span>
+                    <span className="settings-language-code">{plugin.id}</span>
+                  </button>
                 );
               })}
             </div>
+          </section>
+
+          <section className="settings-general-section">
+            <h3 className="settings-general-heading">{t("settings.costDisplay")}</h3>
+            <p className="settings-general-description">{t("settings.costDisplayDescription")}</p>
             <div className="settings-option-list">
+              <div className="settings-option settings-cost-currency-option">
+                <span className="settings-option-text">
+                  <span className="settings-option-title">{t("settings.costCurrency")}</span>
+                  <span className="settings-option-hint">{t("settings.costCurrencyHint")}</span>
+                </span>
+                <div
+                  className="settings-choice-group"
+                  role="radiogroup"
+                  aria-label={t("settings.costCurrency")}
+                >
+                  {COST_CURRENCY_MODES.map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      role="radio"
+                      aria-checked={costCurrency.settings.mode === mode}
+                      disabled={costCurrency.saving}
+                      className={`config-button config-button-small ${costCurrency.settings.mode === mode ? "config-button-primary" : "config-button-secondary"}`}
+                      onClick={() => void costCurrency.setMode(mode).catch(() => {})}
+                    >
+                      {mode === "auto"
+                        ? t("settings.costCurrencyAuto")
+                        : mode === "USD"
+                          ? t("settings.costCurrencyUsd")
+                          : t("settings.costCurrencyCny")}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="settings-option">
                 <span className="settings-option-text">
-                  <span className="settings-option-title">{t("appSettings.customCss")}</span>
-                  <span className="settings-option-hint">{t("appSettings.customCssHint")}</span>
+                  <span className="settings-option-title">{t("settings.costExchangeRate")}</span>
+                  <span className="settings-option-hint">{t("settings.costExchangeRateHint")}</span>
                 </span>
-                {desktop && (
-                  <ConfigButton
-                    variant="secondary"
-                    size="small"
-                    className="settings-option-action"
-                    disabled={customCssBusy}
-                    onClick={() => void openCustomCss()}
-                  >
-                    {customCssBusy ? t("appSettings.customCssOpening") : t("appSettings.customCssOpen")}
-                  </ConfigButton>
-                )}
+                <select
+                  className="settings-cost-provider"
+                  value={costCurrency.settings.provider}
+                  disabled={costCurrency.saving || costCurrency.loading}
+                  aria-label={t("settings.costExchangeRateProvider")}
+                  onChange={(event) =>
+                    void costCurrency
+                      .setProvider(event.target.value as ExchangeRateProvider)
+                      .catch(() => {})}
+                >
+                  <option value="frankfurter">Frankfurter</option>
+                  <option value="exchangerate">exchangerate.fun</option>
+                </select>
+              </div>
+
+              <div className="settings-option">
+                <span className="settings-option-text">
+                  <span className="settings-option-title">{t("settings.costRateValue")}</span>
+                  <span className="settings-option-hint">
+                    {costCurrency.settings.rate && costCurrency.settings.rate > 0
+                      ? `1 USD ≈ ${costCurrency.settings.rate.toFixed(4)} CNY${costCurrency.settings.rateDate ? ` · ${costCurrency.settings.rateDate}` : ""}`
+                      : t("settings.costRateNone")}
+                  </span>
+                </span>
+                <ConfigButton
+                  variant="secondary"
+                  size="small"
+                  disabled={costCurrency.refreshing || costCurrency.loading}
+                  onClick={() => void costCurrency.refresh().catch(() => {})}
+                >
+                  {costCurrency.refreshing ? t("settings.costRateRefreshing") : t("settings.costRateRefresh")}
+                </ConfigButton>
               </div>
             </div>
-            {customCssError && <p role="alert" className="settings-general-error">{customCssError}</p>}
+            {costCurrency.error && (
+              <p role="alert" className="settings-general-error">{t("settings.costRateFailed")} {costCurrency.error}</p>
+            )}
           </section>
 
           <section className="settings-general-section">
@@ -341,6 +491,15 @@ function GeneralSettings({
                   onChange={onQuoteSelectionChange}
                 />
               </div>
+              <div className="settings-chat-option settings-chat-switch-option">
+                <span>{t("settings.completionSound")}</span>
+                <ConfigSwitch
+                  checked={soundEnabled}
+                  label={t("settings.completionSound")}
+                  onChange={(enabled) => { if (enabled !== soundEnabled) onSoundToggle(); }}
+                />
+              </div>
+              <ArtifactsSettingRow />
               <div className="settings-chat-option settings-chat-switch-option" role="radiogroup" aria-label={t("settings.enterSendMode")}>
                 <span>{t("settings.enterSendMode")}</span>
                 <div className="settings-send-mode-options">
@@ -391,7 +550,21 @@ function GeneralSettings({
                   </button>
                 </div>
               </div>
+              <div className="settings-chat-option settings-chat-switch-option">
+                <span>{t("settings.localizedOutput")}</span>
+                <ConfigSwitch
+                  checked={localizedOutput?.enabled ?? false}
+                  disabled={localizedOutput === null}
+                  loading={localizedOutputSaving}
+                  label={t("settings.localizedOutput")}
+                  onChange={(enabled) => void saveLocalizedOutput(enabled, locale)}
+                />
+              </div>
             </div>
+            <p className="settings-general-description">{t("settings.localizedOutputHint")}</p>
+            {localizedOutputError && (
+              <p role="alert" className="settings-general-error">{t("settings.localizedOutputFailed")} {localizedOutputError}</p>
+            )}
           </section>
 
           {shellSettings?.isWindows && (
@@ -439,28 +612,158 @@ function GeneralSettings({
           </section>
 
           <section className="settings-general-section">
-            <h3 className="settings-general-heading">{t("common.language")}</h3>
-            <div role="radiogroup" aria-label={t("common.language")} className="settings-language-options">
-              {supportedLocales.map((plugin) => {
-                const selected = locale === plugin.id;
+            <h3 className="settings-general-heading">{t("settings.appearance")}</h3>
+            <div role="radiogroup" aria-label={t("settings.appearance")} className="settings-theme-options">
+              {THEME_OPTIONS.map((option) => {
+                const selected = preference === option.id;
                 return (
-                  <button
-                    key={plugin.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={selected}
-                    onClick={() => setLocale(plugin.id as typeof locale)}
-                    className="settings-language-option"
+                  <label
+                    key={option.id}
+                    className="settings-theme-option"
                   >
-                    <span className="settings-language-radio">
-                      {selected && <span className="settings-language-radio-dot" />}
-                    </span>
-                    <span className="settings-language-label">{plugin.label}</span>
-                    <span className="settings-language-code">{plugin.id}</span>
-                  </button>
+                    <input
+                      type="radio"
+                      name="theme"
+                      value={option.id}
+                      checked={selected}
+                      onChange={() => setThemePreference(option.id)}
+                      className="sr-only"
+                    />
+                    <ThemeIcon preference={option.id} />
+                    <span className="settings-theme-option-label">{t(option.label)}</span>
+                  </label>
                 );
               })}
             </div>
+            <div className="settings-option-list">
+              <div className="settings-option">
+                <span className="settings-option-text">
+                  <span className="settings-option-title">{t("appSettings.customCss")}</span>
+                  <span className="settings-option-hint">{t("appSettings.customCssHint")}</span>
+                </span>
+                {desktop && (
+                  <ConfigButton
+                    variant="secondary"
+                    size="small"
+                    className="settings-option-action"
+                    disabled={customCssBusy}
+                    onClick={() => void openCustomCss()}
+                  >
+                    {customCssBusy ? t("appSettings.customCssOpening") : t("appSettings.customCssOpen")}
+                  </ConfigButton>
+                )}
+              </div>
+
+              <div className="settings-option">
+                <span className="settings-option-text">
+                  <span className="settings-option-title">{t("appSettings.backgroundImage")}</span>
+                  <span className="settings-option-hint">{t("appSettings.backgroundImageHint")}</span>
+                </span>
+                <div className="settings-background-actions">
+                  {backgroundImage && (
+                    <ConfigButton
+                      variant="secondary"
+                      size="small"
+                      onClick={removeBackgroundImage}
+                    >
+                      {t("appSettings.backgroundImageRemove")}
+                    </ConfigButton>
+                  )}
+                  <ConfigButton
+                    variant="secondary"
+                    size="small"
+                    disabled={backgroundBusy}
+                    onClick={() => void chooseBackgroundImage()}
+                  >
+                    {backgroundBusy
+                      ? t("appSettings.backgroundImageProcessing")
+                      : backgroundImage
+                        ? t("appSettings.backgroundImageChange")
+                        : t("appSettings.backgroundImageChoose")}
+                  </ConfigButton>
+                </div>
+              </div>
+
+              {backgroundImage && (
+                <div className="settings-option settings-background-preview">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    className="settings-background-thumb"
+                    src={backgroundImage}
+                    alt=""
+                    aria-hidden="true"
+                  />
+                  <div className="settings-background-controls">
+                    <div className="settings-background-control">
+                      <span>{t("appSettings.backgroundImageDim")}</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={80}
+                        step={1}
+                        value={Math.round(backgroundOptions.dim * 100)}
+                        aria-label={t("appSettings.backgroundImageDim")}
+                        onChange={(event) =>
+                          updateBackgroundOptions({ dim: Number(event.target.value) / 100 })
+                        }
+                      />
+                    </div>
+                    <div className="settings-background-control">
+                      <span>{t("appSettings.backgroundImageBlur")}</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={24}
+                        step={1}
+                        value={backgroundOptions.blur}
+                        aria-label={t("appSettings.backgroundImageBlur")}
+                        onChange={(event) =>
+                          updateBackgroundOptions({ blur: Number(event.target.value) })
+                        }
+                      />
+                    </div>
+                    <div className="settings-background-control">
+                      <span>{t("appSettings.backgroundImageFit")}</span>
+                      <div
+                        className="settings-choice-group"
+                        role="radiogroup"
+                        aria-label={t("appSettings.backgroundImageFit")}
+                      >
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={backgroundOptions.fit === "cover"}
+                          className={`config-button config-button-small ${backgroundOptions.fit === "cover" ? "config-button-primary" : "config-button-secondary"}`}
+                          onClick={() => updateBackgroundOptions({ fit: "cover" })}
+                        >
+                          {t("appSettings.backgroundImageFitCover")}
+                        </button>
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={backgroundOptions.fit === "contain"}
+                          className={`config-button config-button-small ${backgroundOptions.fit === "contain" ? "config-button-primary" : "config-button-secondary"}`}
+                          onClick={() => updateBackgroundOptions({ fit: "contain" })}
+                        >
+                          {t("appSettings.backgroundImageFitContain")}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="settings-background-control">
+                      <span>{t("appSettings.backgroundImageEnabled")}</span>
+                      <ConfigSwitch
+                        size="small"
+                        checked={backgroundOptions.enabled}
+                        label={t("appSettings.backgroundImageEnabled")}
+                        onChange={(enabled) => updateBackgroundOptions({ enabled })}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+            {customCssError && <p role="alert" className="settings-general-error">{customCssError}</p>}
+            {backgroundError && <p role="alert" className="settings-general-error">{backgroundError}</p>}
           </section>
 
           <DesktopAppSection />
@@ -499,6 +802,8 @@ export function SettingsPanel({
   onSessionReloaded,
   quoteSelectionEnabled,
   onQuoteSelectionChange,
+  soundEnabled,
+  onSoundToggle,
   projectTrust,
   onOpenTrustDialog,
   onProjectTrustChanged,
@@ -527,11 +832,15 @@ export function SettingsPanel({
   // keeps the dialog open with it (see onBusyChange above).
   useEffect(() => listenForPanelEscape(document, () => { if (!busy) onClose(); }), [onClose, busy]);
 
+  // Per-platform dialog styling (native-theme.css) keys off <html data-platform>; set before paint.
+  useLayoutEffect(() => { applyUiPlatform(); }, []);
+
   // Focus moves into Settings as it opens and back to what had it once it closes. Left
   // on the chat composer (a bare /mcp opens Settings from there), Escape would reach the
   // composer first and stop a running agent, which also kept Settings open. A layout
   // effect, so the opener is read before a section focuses its own search box.
   const dialogRef = useRef<HTMLDivElement>(null);
+
   useLayoutEffect(() => focusModalPanel(document, dialogRef.current, {
     restoreTextEntry: !window.matchMedia?.("(pointer: coarse)").matches,
   }), []);
@@ -608,7 +917,7 @@ export function SettingsPanel({
         </div>
 
         <main className="settings-dialog-main">
-          {sectionHost("general", <GeneralSettings sessionId={sessionId} onSessionReloaded={onSessionReloaded} quoteSelectionEnabled={quoteSelectionEnabled} onQuoteSelectionChange={onQuoteSelectionChange} onBusyChange={setBusy} />)}
+          {sectionHost("general", <GeneralSettings sessionId={sessionId} onSessionReloaded={onSessionReloaded} quoteSelectionEnabled={quoteSelectionEnabled} onQuoteSelectionChange={onQuoteSelectionChange} soundEnabled={soundEnabled} onSoundToggle={onSoundToggle} onBusyChange={setBusy} />)}
           {sectionHost("models", <ModelsConfig embedded cwd={cwd} onClose={onClose} onOpenMcp={() => activateSection("mcp")} />)}
           {/* Visited sections stay mounted, so the ones whose answer depends on trust take the page's
               status and load again in place when trusting from Settings › MCP changes it. */}

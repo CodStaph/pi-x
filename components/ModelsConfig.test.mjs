@@ -7,15 +7,18 @@ const jiti = createJiti(import.meta.url, { tsconfigPaths: true });
 const {
   collectModelRenames,
   hasModelCostDraftValue,
+  listModelOverrides,
   modelCostToDraft,
+  modelOverrideSpecs,
   parseCompleteModelCost,
   renameProviderEntry,
+  resolveModelSpecHint,
   savedModelIds,
   serializeHeaderRows,
   setCompatBool,
   trackAddedModels,
   updateHeaderRow,
-} = await jiti.import("./models-config-helpers.ts");
+} = await jiti.import("./models-config-helpers");
 
 const source = await readFile(new URL("./ModelsConfig.tsx", import.meta.url), "utf8");
 const cssSource = await readFile(new URL("../app/settings.css", import.meta.url), "utf8");
@@ -170,10 +173,10 @@ test("per-model settings use one primary divider before advanced settings", () =
   );
 
   assert.equal(
-    (modelDetail.match(/borderTop: "1px solid var\(--border\)"/g) ?? []).length,
+    (modelDetail.match(/borderTop: "var\(--hairline\) solid var\(--border\)"/g) ?? []).length,
     1,
   );
-  assert.doesNotMatch(modelDetail, /borderBottom: "1px solid var\(--border\)"/);
+  assert.doesNotMatch(modelDetail, /borderBottom: "var\(--hairline\) solid var\(--border\)"/);
 });
 
 test("thinking level overrides keep explicit default, disabled, and custom controls", () => {
@@ -307,4 +310,28 @@ test("model discovery is not gated on a configured base URL", () => {
   assert.match(providerDetail, /disabled=\{discoveryState\.phase === "loading"\}/);
   assert.doesNotMatch(providerDetail, /!provider\.baseUrl\?\.trim\(\)/);
   assert.match(providerDetail, /Leave empty for a built-in provider to use the endpoint pi ships/);
+});
+
+test("reads modelOverrides spec values for a model id (#131)", () => {
+  const overrides = {
+    "gpt-6-astra": { contextWindow: 500000, maxTokens: -1, name: "Astra" },
+    broken: "not an object",
+  };
+  assert.deepEqual(modelOverrideSpecs(overrides, " gpt-6-astra "), { contextWindow: 500000 });
+  assert.deepEqual(modelOverrideSpecs(overrides, "other"), {});
+  assert.deepEqual(modelOverrideSpecs(undefined, "gpt-6-astra"), {});
+  assert.deepEqual(listModelOverrides(overrides).map((entry) => entry.modelId), ["gpt-6-astra"]);
+});
+
+test("an override wins over the form value and an empty field names pi's fallback (#131)", () => {
+  assert.deepEqual(resolveModelSpecHint("contextWindow", undefined, 500000), { kind: "override", value: 500000, replacesDraft: false });
+  assert.deepEqual(resolveModelSpecHint("contextWindow", 200000, 500000), { kind: "override", value: 500000, replacesDraft: true });
+  assert.deepEqual(resolveModelSpecHint("contextWindow", undefined, undefined), { kind: "fallback", value: 128000 });
+  assert.deepEqual(resolveModelSpecHint("maxTokens", undefined, undefined), { kind: "fallback", value: 16384 });
+  assert.deepEqual(resolveModelSpecHint("maxTokens", 8000, undefined), { kind: "own" });
+});
+
+test("spec inputs never use a bare number as placeholder (#131)", () => {
+  assert.doesNotMatch(source, /placeholder="128000"|placeholder="16384"/);
+  assert.match(source, /t\("models\.specNotSet"\)/);
 });

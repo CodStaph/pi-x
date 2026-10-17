@@ -9,15 +9,15 @@ const jiti = createJiti(import.meta.url, {
 });
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { I18nProvider } = await jiti.import("@/hooks/useI18n.tsx");
+const { I18nProvider } = await jiti.import("@/hooks/useI18n");
 const {
   ProjectTrustDialog,
   ProjectTrustDialogView,
   ProjectTrustMcpSection,
   MCP_LISTING_TIMEOUT_MS,
   projectTrustListingFrom,
-} = await jiti.import("./ProjectTrustDialog.tsx");
-const { enLocale } = await jiti.import("@/lib/i18n/messages/en.ts");
+} = await jiti.import("./ProjectTrustDialog");
+const { enLocale } = await jiti.import("@/lib/i18n/messages/en");
 const source = await readFile(new URL("./ProjectTrustDialog.tsx", import.meta.url), "utf8");
 const apiTypesSource = await readFile(new URL("../lib/api-types.ts", import.meta.url), "utf8");
 const settingsCss = await readFile(new URL("../app/settings.css", import.meta.url), "utf8");

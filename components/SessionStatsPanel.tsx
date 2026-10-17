@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { copyText } from "@/lib/clipboard";
+import { useCostCurrency } from "@/hooks/useCostCurrency";
 import type { ContextUsage, SessionStatsInfo } from "@/lib/pi-types";
 
 export type SessionCopyField = "file" | "id";
@@ -19,6 +20,7 @@ interface SessionStatsPanelProps {
  */
 export function SessionStatsPanel({ sessionStats, contextUsage, isMobile }: SessionStatsPanelProps) {
   const { locale, t: translate } = useI18n();
+  const { formatCost } = useCostCurrency();
   const [copiedSessionField, setCopiedSessionField] = useState<SessionCopyField | null>(null);
   const sessionCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -33,7 +35,7 @@ export function SessionStatsPanel({ sessionStats, contextUsage, isMobile }: Sess
   return (
     <div className="session-info-popover" style={{
       background: "var(--surface-elevated)",
-      borderBottom: "1px solid var(--border)",
+      borderBottom: "var(--hairline) solid var(--border)",
       boxShadow: "var(--shadow-popover)",
       padding: "12px 16px",
     }}>
@@ -60,7 +62,7 @@ export function SessionStatsPanel({ sessionStats, contextUsage, isMobile }: Sess
         const ctx = contextUsage ?? sessionStats.contextUsage;
         const formatCompact = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(0)}k` : String(n);
         const extraTokenRows = [
-          ...(sessionStats.cost > 0 ? [[translate("session.cost"), `$${sessionStats.cost.toFixed(4)}`]] : []),
+          ...(sessionStats.cost > 0 ? [[translate("session.cost"), formatCost(sessionStats.cost)]] : []),
           ...(ctx?.contextWindow ? [[translate("session.context"), `${ctx.percent !== null ? `${ctx.percent.toFixed(1)}%` : "?"} / ${formatCompact(ctx.contextWindow)}`]] : []),
         ];
         const section = (
@@ -110,7 +112,7 @@ export function SessionStatsPanel({ sessionStats, contextUsage, isMobile }: Sess
                 marginTop: -2,
                 color: copied ? "var(--accent)" : "var(--text-dim)",
                 background: "transparent",
-                border: "1px solid var(--border)",
+                border: "var(--hairline) solid var(--border)",
                 borderRadius: 4,
                 cursor: "pointer",
                 flex: "0 0 auto",

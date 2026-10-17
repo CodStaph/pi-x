@@ -8,7 +8,7 @@ const jiti = createJiti(import.meta.url, {
   jsx: { runtime: "automatic" },
   tsconfigPaths: true,
 });
-const { AnsiText } = await jiti.import("./AnsiText.tsx");
+const { AnsiText } = await jiti.import("./AnsiText");
 
 function toHtml(text) {
   return renderToStaticMarkup(React.createElement(AnsiText, { text }));

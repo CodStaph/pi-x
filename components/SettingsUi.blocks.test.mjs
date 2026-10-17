@@ -19,7 +19,7 @@ const {
   ConfigScopeSwitch,
   ConfigScopeTag,
   ConfigTrustNotice,
-} = await jiti.import("./SettingsUi.tsx");
+} = await jiti.import("./SettingsUi");
 
 const h = React.createElement;
 const render = (element) => renderToStaticMarkup(element);

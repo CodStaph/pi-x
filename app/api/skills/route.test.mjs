@@ -11,7 +11,7 @@ const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = agentDir;
 
 const jiti = createJiti(import.meta.url, { alias: { "@": process.cwd() } });
-const { PATCH } = await jiti.import("./route.ts");
+const { PATCH } = await jiti.import("./route");
 
 after(async () => {
   if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

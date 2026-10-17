@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json() as { id?: unknown; cwd?: unknown; cols?: unknown; rows?: unknown };
+    const body = await req.json() as { id?: unknown; cwd?: unknown; cols?: unknown; rows?: unknown; shell?: unknown };
     if (body.id !== undefined && (typeof body.id !== "string" || !/^[a-f0-9]{32}$/.test(body.id))) {
       return NextResponse.json({ error: "Invalid terminal id" }, { status: 400 });
     }
@@ -29,6 +29,7 @@ export async function POST(req: Request) {
       typeof body.cols === "number" ? body.cols : 80,
       typeof body.rows === "number" ? body.rows : 24,
       body.id as string | undefined,
+      typeof body.shell === "string" ? body.shell : undefined,
     );
     return NextResponse.json({ id });
   } catch (error) {

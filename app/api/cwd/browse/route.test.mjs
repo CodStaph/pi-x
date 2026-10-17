@@ -6,7 +6,7 @@ import test from "node:test";
 import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url, { tsconfigPaths: true });
-const { GET } = await jiti.import("./route.ts");
+const { GET } = await jiti.import("./route");
 const { NextRequest } = await jiti.import("next/server");
 
 function browseRequest(directory) {

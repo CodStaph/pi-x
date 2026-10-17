@@ -3,7 +3,7 @@ import test from "node:test";
 import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url, { tsconfigPaths: true });
-const { mergeCatalogRow } = await jiti.import("./session-catalog-helpers.ts");
+const { mergeCatalogRow } = await jiti.import("./session-catalog-helpers");
 
 function row(overrides = {}) {
   return {
