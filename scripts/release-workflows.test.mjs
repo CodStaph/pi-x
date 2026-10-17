@@ -58,18 +58,17 @@ test("the merge gate covers tests, types, lint and a real build", () => {
 });
 
 test("npm test covers every test directory, recursively", async () => {
-  // Upstream ships components/*.test.mjs covering fork-modified files, and the
-  // sync gate once ran only lib/ and scripts/, silently skipping them nightly.
-  // The globs must recurse too: a flat components/*.test.mjs skips the
-  // fork-owned tests under components/desktop/.
+  // Inspect the runner's actual inventory: shell globs do not expand reliably
+  // on Windows, and flat directory patterns silently miss nested tests.
   const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  assert.equal(pkg.scripts.test, "node scripts/run-tests.mjs");
+  const { execFileSync } = await import("node:child_process");
+  const files = JSON.parse(execFileSync(process.execPath, ["scripts/run-tests.mjs", "--list"], { cwd: root, encoding: "utf8" }));
   for (const dir of ["app", "lib", "scripts", "components", "hooks"]) {
-    assert.match(
-      pkg.scripts.test,
-      new RegExp(`${dir}/\\*\\*/\\*\\.test\\.mjs`),
-      `npm test must recurse into ${dir}/`,
-    );
+    assert.ok(files.some((file) => file.startsWith(`${dir}/`)), `npm test must cover ${dir}/`);
   }
+  assert.ok(files.includes("app/api/cwd/status/route.test.mjs"), "nested route tests must be included");
+  assert.ok(files.includes("pi-workspace-manager/test/workspace-manager.test.mjs"), "workspace package tests must be included");
 });
 
 test("no test file is left out of npm test", async () => {
@@ -232,6 +231,10 @@ test("desktop staging ships node-pty native prebuilds with executable helpers", 
   assert.match(prepareSource, /node_modules", "node-pty"\)/);
   assert.match(prepareSource, /\["darwin-arm64", "darwin-x64"\]/);
   assert.match(prepareSource, /chmod\(join\(ptyDestination, "prebuilds", variant, "spawn-helper"\), 0o755\)/);
+  // ...and the lib/ tree, whose Windows Worker script
+  // (lib/worker/conoutSocketWorker.js) is reached through a runtime-computed
+  // path too: without it every packaged terminal exits immediately with -1.
+  assert.match(prepareSource, /cp\(join\(ptySource, "lib"\), join\(ptyDestination, "lib"\)/);
 });
 
 test("the Tauri crates stay on the npm packages' major/minor", async () => {

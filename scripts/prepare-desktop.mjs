@@ -1,12 +1,13 @@
-import { access, chmod, copyFile, cp, mkdir, readdir, rm } from "node:fs/promises";
+import { access, chmod, copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { constants } from "node:fs";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { desktopTargetTriple } from "./desktop-platform.mjs";
 import { piPackageDirNames } from "./pi-packages.mjs";
-import { dedupeNestedPackages, findNestedPiScopePackages, stageCompletePackage } from "./stage-package.mjs";
+import { dedupeNestedPackages, externalPackageSpecifiers, findNestedPiScopePackages, stageCompletePackage, stageResolvedClosure } from "./stage-package.mjs";
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopBuildDir = join(rootDir, ".next-desktop");
@@ -19,7 +20,13 @@ async function runNextBuild() {
   const require = createRequire(import.meta.url);
   const nextBin = require.resolve("next/dist/bin/next", { paths: [rootDir] });
 
-  await rm(desktopBuildDir, { recursive: true, force: true });
+  // Keep Next's persistent webpack cache (hundreds of MB) across desktop
+  // builds; deleting the whole dist dir forces a cold compile every time.
+  // Next rewrites everything else in the dist dir itself.
+  for (const entry of await readdir(desktopBuildDir).catch(() => [])) {
+    if (entry === "cache") continue;
+    await rm(join(desktopBuildDir, entry), { recursive: true, force: true });
+  }
 
   // The packaged server leaks its runtime config into spawned process trees
   // via __NEXT_PRIVATE_STANDALONE_CONFIG; JSON drops function values, so an
@@ -28,23 +35,37 @@ async function runNextBuild() {
   delete buildEnv.__NEXT_PRIVATE_STANDALONE_CONFIG;
   delete buildEnv.__NEXT_PRIVATE_ORIGIN;
 
-  await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [nextBin, "build", "--webpack"], {
-      cwd: rootDir,
-      env: {
-        ...buildEnv,
-        NEXT_TELEMETRY_DISABLED: "1",
-        PI_WEB_DESKTOP_BUILD: "1",
-      },
-      stdio: "inherit",
-    });
+  // @vercel/nft folds `os.homedir()` / `$HOME` (the SDK's package manager reads
+  // both) into `C:\Users\<user>\**\*` and traces the entire Windows profile.
+  // Those files are never needed at runtime, and the standalone copier turns an
+  // out-of-root trace into the invalid `standalone\C:\Users\...`, which fails
+  // with "Failed to copy traced files". Point the tracer at an empty home; the
+  // packaged server still reads the real home at runtime.
+  const traceHome = await mkdtemp(join(tmpdir(), "pi-desktop-trace-home-"));
+  buildEnv.HOME = traceHome;
+  buildEnv.USERPROFILE = traceHome;
 
-    child.once("error", reject);
-    child.once("exit", (code, signal) => {
-      if (code === 0) resolve();
-      else reject(new Error(`Next.js desktop build failed (${signal ?? `exit ${code}`}).`));
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [nextBin, "build", "--webpack"], {
+        cwd: rootDir,
+        env: {
+          ...buildEnv,
+          NEXT_TELEMETRY_DISABLED: "1",
+          PI_WEB_DESKTOP_BUILD: "1",
+        },
+        stdio: "inherit",
+      });
+
+      child.once("error", reject);
+      child.once("exit", (code, signal) => {
+        if (code === 0) resolve();
+        else reject(new Error(`Next.js desktop build failed (${signal ?? `exit ${code}`}).`));
+      });
     });
-  });
+  } finally {
+    await rm(traceHome, { recursive: true, force: true });
+  }
 }
 
 async function assembleServer() {
@@ -78,9 +99,18 @@ async function assembleServer() {
   // (`prebuilds/${platform}-${arch}/*.node`), which Next's file tracer cannot
   // follow — the standalone output ships only lib/ and package.json. Copy the
   // full prebuilds tree (one signed build serves every platform it supports)
-  // and restore the executable bit macOS strips from spawn-helper.
+  // and restore the executable bit macOS strips from spawn-helper. The lib/
+  // tree has the same problem twice more: Windows creates a Worker thread from
+  // `lib/worker/conoutSocketWorker.js`, and the console-list fallback forks
+  // `lib/conpty_console_list_agent.js`, both through runtime-computed
+  // `__dirname` joins the tracer does not follow. Without the worker every new
+  // terminal on Windows dies instantly, because node-pty reports the failed
+  // connection as exit code -1 ("process exited with code -1"). Re-copy the
+  // whole lib/ tree, not just those two files, so a later node-pty release
+  // cannot silently lose a third runtime-loaded module.
   const ptySource = join(rootDir, "node_modules", "node-pty");
   const ptyDestination = join(serverResourcesDir, "node_modules", "node-pty");
+  await cp(join(ptySource, "lib"), join(ptyDestination, "lib"), { recursive: true, force: true });
   const ptyPrebuildsSource = join(ptySource, "prebuilds");
   let ptyPrebuildsPresent = false;
   try {
@@ -128,6 +158,35 @@ async function assembleServer() {
   await stageCompletePackage({
     name: "quickjs-wasi",
     sources: [join(piCodingAgentModules, "quickjs-wasi"), join(rootDir, "node_modules", "quickjs-wasi")],
+    stagedNodeModulesDir,
+  });
+
+  // pi-ai loads Amazon Bedrock through a variable specifier
+  // (`import(runtimeSpecifier)` in bedrock-converse-stream.lazy.js) so bundlers
+  // cannot follow it into the Node-only AWS SDK. Next's file tracer is one of
+  // those bundlers: the standalone server gets pi-ai's dist, but not
+  // @aws-sdk/client-bedrock-runtime, and a packaged session on amazon-bedrock
+  // dies with ERR_MODULE_NOT_FOUND at the first stream. Copy the closure Node
+  // actually resolves from that entry. Nested copies have to stay nested —
+  // pi-ai's https-proxy-agent is 9.1.0 because the hoisted one is 7.0.6.
+  const bedrockEntry = join(
+    rootDir,
+    "node_modules",
+    "@earendil-works",
+    "pi-ai",
+    "dist",
+    "api",
+    "bedrock-converse-stream.js",
+  );
+  await stageResolvedClosure({
+    importer: bedrockEntry,
+    specifiers: await externalPackageSpecifiers(bedrockEntry, [
+      "@aws-sdk/client-bedrock-runtime",
+      "@smithy/node-http-handler",
+      "http-proxy-agent",
+      "https-proxy-agent",
+    ]),
+    sourceRoot: rootDir,
     stagedNodeModulesDir,
   });
 

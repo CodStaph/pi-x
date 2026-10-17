@@ -103,39 +103,55 @@ jobs:
           tagName: v__VERSION__
           releaseName: pi-agent-desktop v__VERSION__
           releaseBody: |
-            ## Pi Agent Desktop 0.5.1
+            ## Pi Agent Desktop 0.6.6
 
-            A fix release for 0.5.0. The main change: **Code mode did not work in the installed app** and now does.
+            Quality-of-life and diagnosability release.
 
-            ### Fixes
+            ### Added
 
-            - Code mode: the packaged app was missing the sandbox's runtime files, so every session reported "Cannot find module .../quickjs-wasi/quickjs.wasm" and Code mode (and any MCP tool reachable only through it) was switched off. The sandbox files are now shipped with the app.
-            - Composer: after a run finished, the send button could do nothing when the draft was unchanged, because it still treated the session as streaming.
-            - Packaging: extension loading and the Code mode sandbox files are now placed wherever the dependency tree puts them, instead of at one fixed path.
+            - The window remembers its size and position across launches.
+            - Timestamped log files, a panic hook and a server monitor, with an **Open logs** button to reach them from Settings.
+            - **Settings → General** gains a **Clear cache** button.
 
-            ### Updates
+            ### Fixed
 
-            - Bundled pi is now 1.0.2, which also clears a known denial-of-service advisory in a dependency.
+            - The composer input is focused automatically when a new session opens.
+            - The Plugins panel showed raw message keys (like `i18n.packageInstalled`) after installing, updating, enabling or removing a package, after reloading the session, and in its empty state. All six missing translations now exist in every language.
+            - Smoother rendering for image-heavy chats: image data URLs are built once per block and result images are keyed by index.
+            - The Homebrew cask uses the supported `depends_on :macos` form.
 
-            Bundled components: pi 1.0.2, pi-web 0.10.0.
+            ### Good to know
+
+            - .docx previews now declare their rendering dependency (mammoth) correctly, so production installs that skip dev dependencies keep working.
+            - A static gate now verifies every translation call site — a missing key or a missing placeholder can no longer reach the UI unnoticed.
+
+            Bundled components: pi 1.3.0, pi-web 0.10.0.
 
             ---
 
-            ## Pi Agent Desktop 0.5.1
+            ## Pi Agent Desktop 0.6.6
 
-            这是 0.5.0 的修复版本。最主要的变化：**已安装的 App 里 Code mode 无法使用，现已修复。**
+            体验与可诊断性版本。
+
+            ### 新增
+
+            - 窗口会记住上次的大小和位置。
+            - 日志文件带时间戳,新增崩溃钩子与服务器监控,可在设置中一键打开日志。
+            - **设置 → 常规**新增**清除缓存**按钮。
 
             ### 修复
 
-            - Code mode：打包后的 App 缺少沙箱运行所需的文件，每个会话都会提示 "Cannot find module .../quickjs-wasi/quickjs.wasm"，Code mode（以及只能通过它调用的 MCP 工具）因此被关闭。现在这些文件已随 App 一起发布。
-            - 输入框：一次运行结束后，如果草稿没有变化，发送按钮可能没有反应，因为它仍把会话当作正在流式输出。
-            - 打包：扩展加载和 Code mode 沙箱所需的文件现在会放到依赖树实际所在的位置，不再固定写死一个路径。
+            - 新开会话时自动聚焦输入框。
+            - 插件面板在安装、更新、启用、移除插件,重载会话后以及空状态下会显示原始键名(如 `i18n.packageInstalled`)。六个缺失的翻译现已在所有语言中补齐。
+            - 图片较多的会话渲染更流畅:图片数据 URL 每块只构建一次,结果图片按索引关联。
+            - Homebrew cask 改用受支持的 `depends_on :macos` 写法。
 
-            ### 更新
+            ### 需要了解
 
-            - 内置 pi 升级到 1.0.2，同时清除了一个依赖中已知的拒绝服务公告。
+            - .docx 预览的渲染依赖(mammoth)现在声明正确,不含开发依赖的生产安装不再受影响。
+            - 新增静态门禁校验所有翻译调用点,缺失键或缺失占位符不再可能悄悄进入界面。
 
-            内置组件版本：pi 1.0.2、pi-web 0.10.0。
+            内置组件版本:pi 1.3.0、pi-web 0.10.0。
           releaseDraft: true
           prerelease: false
           uploadUpdaterJson: true
@@ -220,3 +236,40 @@ jobs:
 
           This issue is reused for subsequent failures; close it once a release is green."
           fi
+
+  # Keeps Casks/pi-agent.rb (the Homebrew tap: `brew tap CodStaph/pi-x
+  # https://github.com/CodStaph/pi-x`) on the release that was just published.
+  # Runs only after `manifest` has published it, so a draft or partly failed
+  # release never reaches Homebrew users. Placed after `notify` because
+  # release-workflows.test.mjs slices the manifest job up to `notify:`.
+  homebrew:
+    needs: manifest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out pi-x
+        uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Point the cask at the published DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./src-tauri/pi-agent-desktop-package.json').version")"
+          digest="$(gh release view "v$version" --json assets \
+            --jq '.assets[] | select(.name | endswith("_aarch64.dmg")) | .digest')"
+          if [ -z "$digest" ]; then
+            echo "No aarch64 DMG digest on release v$version" >&2
+            exit 1
+          fi
+          node scripts/update-homebrew-cask.mjs "$version" "$digest"
+          if git diff --quiet -- Casks; then
+            echo "Cask already at $version"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/pi-agent.rb
+          git commit -m "chore(homebrew): update cask to $version"
+          git push origin HEAD:main
