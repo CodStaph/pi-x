@@ -5911,6 +5911,16 @@ html.has-app-background .app-shell {
   background: transparent !important;
 }
 
+/* The workbench surface (--workbench-bg) is painted for the normal shell. With a
+   picture behind it the chat column and the panel chrome must stay transparent,
+   or the image only shows through the translucent sidebar (the panel header and
+   the compact drawer painted their own fill). */
+html.has-app-background .app-main-column,
+html.has-app-background .right-panel-tab-strip,
+html.has-app-background .right-panel-container:not(.right-panel-full-width) {
+  background: transparent !important;
+}
+
 /* The glass effect must live on a pseudo-element: `backdrop-filter` (like
    `filter`) makes the top bar a containing block for `position: fixed`
    descendants, and the "More" dropdown is a fixed child positioned from the
