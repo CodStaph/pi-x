@@ -19,3 +19,6 @@
 *.dmg binary
 *.exe binary
 *.zip binary
+
+# Generated bundles: byte-identical to what the build script wrote.
+public/preview-runtime/** -text
