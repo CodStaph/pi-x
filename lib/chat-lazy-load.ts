@@ -15,6 +15,35 @@ export function getNextVisibleCount(currentVisibleCount: number, pageSize = VISI
   return currentVisibleCount + pageSize;
 }
 
+/**
+ * A tail refresh (agent_end, an appended entry) returns only the newest page.
+ * Replacing the loaded window with it drops the history the reader already
+ * paged in: the content above shrinks and the browser clamps the scroll
+ * offset, so the conversation appears to jump. Keep the loaded prefix and swap
+ * in the new tail, but only when the new page overlaps the loaded window;
+ * otherwise the page belongs to another branch and replaces it.
+ */
+export function mergeTailWindow<T>(
+  previousEntryIds: readonly string[],
+  previousMessages: readonly T[],
+  nextEntryIds: readonly string[],
+  nextMessages: readonly T[],
+): { entryIds: string[]; messages: T[]; keptPrefix: number } {
+  if (!nextEntryIds.length || previousEntryIds.length <= nextEntryIds.length) {
+    return { entryIds: [...nextEntryIds], messages: [...nextMessages], keptPrefix: 0 };
+  }
+  const firstNext = nextEntryIds[0];
+  const cut = previousEntryIds.indexOf(firstNext);
+  if (cut <= 0) {
+    return { entryIds: [...nextEntryIds], messages: [...nextMessages], keptPrefix: 0 };
+  }
+  return {
+    entryIds: [...previousEntryIds.slice(0, cut), ...nextEntryIds],
+    messages: [...previousMessages.slice(0, cut), ...nextMessages],
+    keptPrefix: cut,
+  };
+}
+
 export function captureScrollDistance(scrollHeight: number, scrollTop: number): number {
   return scrollHeight - scrollTop;
 }

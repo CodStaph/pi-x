@@ -50,6 +50,7 @@ import {
   shouldShowScrollToLatest,
 } from "@/lib/chat-lazy-load";
 import { findChatScrollAnchor, type ChatScrollPosition } from "@/lib/chat-scroll-position";
+import { mergeTailWindow } from "@/lib/chat-lazy-load";
 import { useI18n } from "@/hooks/useI18n";
 import {
   INITIAL_STREAMING_STATE,
@@ -825,6 +826,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         && cached.entryIds.length >= (d.context.entryIds ?? []).length,
       );
       const persistedMessages = revisionUnchanged ? messagesRef.current : d.context.messages;
+      let mergedWindow: { entryIds: string[]; messages: typeof persistedMessages; keptPrefix: number } | null = null;
       setData(revisionUnchanged
         ? {
             ...d,
@@ -857,10 +859,20 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           loadedEntryIds: entryIdsRef.current,
         });
       } else {
-        setMessages(persistedMessages);
-        setEntryIds(d.context.entryIds ?? []);
-        setHistoryCursor(d.context.oldestEntryId);
-        setHasEarlierMessages(d.context.hasMore);
+        // Keep the pages the reader already loaded: a tail refresh must not
+        // collapse the window back to one page (that drops history above the
+        // viewport, and the clamped scroll offset reads as a jump).
+        const merged = mergeTailWindow(
+          entryIdsRef.current,
+          messagesRef.current,
+          d.context.entryIds ?? [],
+          d.context.messages,
+        );
+        setMessages(merged.messages);
+        setEntryIds(merged.entryIds);
+        setHistoryCursor(merged.keptPrefix > 0 ? historyCursorRef.current : d.context.oldestEntryId);
+        setHasEarlierMessages(merged.keptPrefix > 0 ? hasEarlierMessagesRef.current : d.context.hasMore);
+        mergedWindow = merged;
       }
       // Tool-preset state is independent of the view cache: it must be applied
       // on every read, cached window or not (#700).
@@ -873,11 +885,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         setSessionViewSnapshot({
           sessionId: sid,
           revision: d.snapshotRevision,
-          messages: persistedMessages,
-          entryIds: d.context.entryIds ?? [],
+          messages: mergedWindow?.messages ?? persistedMessages,
+          entryIds: mergedWindow?.entryIds ?? d.context.entryIds ?? [],
           leafId: d.leafId,
-          oldestEntryId: d.context.oldestEntryId,
-          hasMore: d.context.hasMore,
+          oldestEntryId: mergedWindow && mergedWindow.keptPrefix > 0 ? historyCursorRef.current : d.context.oldestEntryId,
+          hasMore: mergedWindow && mergedWindow.keptPrefix > 0 ? hasEarlierMessagesRef.current : d.context.hasMore,
           summaryTree: d.tree,
           thinkingLevel: d.context.thinkingLevel,
           model: d.context.model,
