@@ -1,6 +1,7 @@
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { slimToolExecutionResult, slimToolResultMessage } from "./tool-result-details";
 import { isForwardedEvent } from "./pi/events";
+import { withoutContentSignatures, withoutMessageSignatures } from "./message-signatures";
 
 export interface AgentEventLike {
   type: string;
@@ -149,14 +150,26 @@ export function toClientAgentEvent(
   // whole prompt plus every tool schema and are never rendered, so drop them
   // before they cost the browser bandwidth.
   if (isSystemMessageEvent(event)) return null;
+  // The agent loop announces a finished message (a tool result, a delivered
+  // user message) with `message_start` and `message_end` back to back. The
+  // browser builds only an assistant reply from its start and reads nothing
+  // but the role of the others, so their body (an image read's base64) went
+  // out twice.
+  if (event.type === "message_start" && isObject(event.message) && event.message.role !== "assistant") {
+    return { type: "message_start", message: { role: event.message.role } };
+  }
 
   if (event.type === "message_update") {
-    const assistantMessageEvent = event.assistantMessageEvent;
-    if (
-      typeof assistantMessageEvent !== "object"
-      || assistantMessageEvent === null
-      || Array.isArray(assistantMessageEvent)
-    ) return null;
+    const rawAssistantMessageEvent = event.assistantMessageEvent;
+    if (!isObject(rawAssistantMessageEvent)) return null;
+    let assistantMessageEvent = rawAssistantMessageEvent;
+
+    if ("toolCall" in assistantMessageEvent) {
+      const toolCall = withoutContentSignatures(assistantMessageEvent.toolCall);
+      if (toolCall !== assistantMessageEvent.toolCall) {
+        assistantMessageEvent = { ...assistantMessageEvent, toolCall };
+      }
+    }
 
     if (!("partial" in assistantMessageEvent)) {
       return {
@@ -184,7 +197,10 @@ export function toClientAgentEvent(
   // extensions persist multi-megabyte DOM outlines there (lib/tool-result-details.ts).
 
   if ((event.type === "message_start" || event.type === "message_end") && isObject(event.message)) {
-    const message = slimToolResultMessage(event.message);
+    // Provider signatures are never read in the browser; strip them before the
+    // fork's tool-result projection so neither the payload nor the projection
+    // carries them (upstream #1193, fork #8f3a71e port).
+    const message = slimToolResultMessage(withoutMessageSignatures(event.message));
     return message === event.message ? event : { ...event, message };
   }
 
