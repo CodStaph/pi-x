@@ -424,6 +424,9 @@ The pi CLI's `AgentSessionRuntime` replaces its single session in place; Pi Web 
 ### Merge guard tests live in `test/merge-guards/`
 Assertions *about the repository* (source markers, manifest/sentinel agreement) are not behaviour tests: they belong in `test/merge-guards/` (see its README), while a test that renders a component or calls a reducer stays beside its code. `scripts/run-tests.mjs` collects `test/` too. `npm run check:ownership` fails when a `high`-risk file in `scripts/fork-ownership.json` has no guard there (or opts out without a reason), and `npm run check:docs` fails when a doc sentence points at a path that no longer exists.
 
+### Upstream sync is selective (route C)
+Full merges of `agegr/pi-web` are not attempted: v0.10.0 → v0.12.2 is 172 commits and 99 conflicting files, and the fork already runs a newer pi SDK (1.3.0 vs 1.2.0), so a merge would downgrade dependencies while mostly importing declined UI. `docs/upstream-cherry-pick.md` holds the runbook, the ported list and the ranked candidate table (security / data / crash / perf / remaining fixes). Port one commit at a time with `git cherry-pick -n`, record conflict decisions in the message, and re-run `drift`, `drift:sdk`, `check:ownership` and `check:docs` afterwards.
+
 ### One process owns an agent directory
 `docs/adr/0008-single-instance-state.md`: the desktop app, `npx pi-web` and the `pi` CLI all read `~/.pi/agent`, but only one pi-web server is *the* owner of in-process state. The 26 `globalThis` blocks are a hot-reload device, never a cross-process protocol; shared files are written either under `proper-lockfile` (settings/auth/mcp), as atomic replace with last-writer-wins (models/agents/desktop JSON), or append-only (sessions, run logs). One writer per session file — `evictIfDiskAhead()` detects a foreign append, it does not exclude one.
 
