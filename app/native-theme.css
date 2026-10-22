@@ -4019,6 +4019,10 @@ html:not(.dark) .session-item.is-selected .session-item-time {
      width and starves breakable columns — CJK text then collapses to a single
      character per line no matter how wide the window is. */
   overflow-wrap: anywhere;
+  /* Upstream #1056: a cell with very long unbreakable content wraps instead of
+     squeezing the other columns (the upstream rule lives in globals.css, which
+     stays byte-identical to upstream here; fork rules live in this file). */
+  max-width: 240px;
 }
 .markdown-body tr:last-child td { border-bottom: 0; }
 .markdown-body th {
