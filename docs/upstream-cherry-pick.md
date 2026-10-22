@@ -36,7 +36,12 @@ node --experimental-strip-types --test <touched tests>
 node node_modules/typescript/bin/tsc --noEmit
 npm test && npm run lint
 git commit                          # message: upstream subject + "Cherry-picked from ..." + conflict notes
+git log -1 --format=%h              # read the landed sha, then add the row below
 ```
+
+The "landed as" sha can only be filled in *after* the code commit exists; a
+guessed sha has been wrong twice now, so this table is updated in a follow-up
+commit, never alongside the code.
 
 A Windows-only failure in a POSIX-facing test is fixed with
 `{ skip: process.platform === "win32" ? "…" : false }`, not by weakening the
@@ -48,6 +53,7 @@ assertion.
 |---|---|---|
 | `cf3ebfb` fix(security): rotate preview-mode secrets at startup | `23929fb` | closed a proxy bypass (`x-prerender-revalidate` skipped `proxy.ts`). Conflicts: kept the fork's `network-exposure-warning` module instead of upstream's inline copy; skipped the read-only-directory test on Windows. |
 | `6425d0d` perf(server): start the pi SDK import at startup | `e515054` | auto-merged. Note: `lib/migrations` already imports `getAgentDir`, so the SDK is loaded during register() anyway; the warm-up makes that independent of the accident. Fixing the ratchet's blind spots (lazy imports, root files) raised its baseline to 73 / 92 / 25. |
+| `341ada5` fix(subagents): refuse to resume a subagent whose folder is gone | `ce0065d` | same check as `send()`'s, made in `resume()` because it prompts the SDK session directly. Docs hunk kept ours (it bundles other commits). |
 | `b8ef31e` fix(tools): keep the sanitized bash off unless named | `5827f6e` | the fork's `bash` extension lacked `defaultActive: false`, so it came back in every session whatever `defaultTools` left out. Only the test's import block conflicted. |
 | `5fd1e67` fix(chat): retry banner / t-s / history window after session switches | `fa7296a` | **partial**: #988, #877, #896 ported; #1031 needs upstream's #1058 `refreshContextUsage` refactor and is dropped. ChatWindow keeps the fork's per-session window memory and adopts the sentinel state beside it. |
 | `8f3a71e` perf(sessions): omit provider signatures from browser payloads | `71f40bc` | signature strip runs *before* the fork's `slimToolResultMessage` projection (upstream's separate block would have skipped it), in both the wire and `entryToUiMessage`; non-assistant `message_start` now carries only its role. `isMessageGroupAnchor` left unimported — its users are later v0.12 commits that are not ported. |
