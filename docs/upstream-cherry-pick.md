@@ -47,6 +47,7 @@ assertion.
 | upstream | landed as | note |
 |---|---|---|
 | `cf3ebfb` fix(security): rotate preview-mode secrets at startup | `23929fb` | closed a proxy bypass (`x-prerender-revalidate` skipped `proxy.ts`). Conflicts: kept the fork's `network-exposure-warning` module instead of upstream's inline copy; skipped the read-only-directory test on Windows. |
+| `6425d0d` perf(server): start the pi SDK import at startup | `e515054` | auto-merged. Note: `lib/migrations` already imports `getAgentDir`, so the SDK is loaded during register() anyway; the warm-up makes that independent of the accident. Fixing the ratchet's blind spots (lazy imports, root files) raised its baseline to 73 / 92 / 25. |
 
 ## Candidates
 
@@ -127,4 +128,4 @@ the fork already has.
 ## Keeping this honest
 
 After each batch: `npm run drift` (recorded vs measured risk), `npm run drift:sdk`
-(71 / 90 / 25 ratchet), `npm run check:ownership`, `npm run check:docs`.
+(73 / 92 / 25 ratchet; raised once for lazy imports and root files), `npm run check:ownership`, `npm run check:docs`.

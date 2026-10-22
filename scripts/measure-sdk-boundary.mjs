@@ -31,8 +31,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const BASELINE_FILE = "scripts/sdk-boundary-baseline.json";
 const SOURCE_ROOTS = ["lib", "hooks", "components", "app"];
+// Root-level server files reach the SDK too (the boot warm-up lives here).
+const EXTRA_FILES = ["instrumentation-node.ts"];
 const SOURCE_FILE = /\.(ts|tsx)$/;
 const SDK_IMPORT = /from\s+"@earendil-works\/[^"]+"/g;
+// A lazy `await import("@earendil-works/…")` reaches the SDK just as a static
+// import does; leaving it out hid two call sites (the export route's lazy SDK
+// load and the startup warm-up) from the ratchet.
+const SDK_DYNAMIC_IMPORT = /import\(\s*"@earendil-works\/[^"]+"\s*\)/g;
 const UNSAFE_ASSERTION = /as unknown as/g;
 
 function toPosix(path) {
@@ -62,13 +68,18 @@ function walk(dir, out) {
 export function measureSdkBoundary(rootDir = ROOT) {
   const paths = [];
   for (const name of SOURCE_ROOTS) walk(join(rootDir, name), paths);
+  for (const name of EXTRA_FILES) {
+    const path = join(rootDir, name);
+    if (existsSync(path)) paths.push(path);
+  }
 
   const files = [];
   const metrics = { sdkImportFiles: 0, sdkImportStatements: 0, unsafeAssertions: 0 };
 
   for (const path of paths) {
     const source = readFileSync(path, "utf8");
-    const statements = (source.match(SDK_IMPORT) ?? []).length;
+    const statements = (source.match(SDK_IMPORT) ?? []).length
+      + (source.match(SDK_DYNAMIC_IMPORT) ?? []).length;
     const assertions = (source.match(UNSAFE_ASSERTION) ?? []).length;
     if (statements > 0) metrics.sdkImportFiles += 1;
     metrics.sdkImportStatements += statements;

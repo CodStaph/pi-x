@@ -297,7 +297,9 @@ CI 中失败信息必须是「请改走 `lib/pi/`，或显式调高基线并说�
 
 自检：把基线临时改小 1，脚本以 `exit=1` 报 `REGRESSED` 并打印指引；恢复后 `exit=0`。
 
-基线变更记录：**2026-10-22**，`sdkImportFiles` 70 → 71、`sdkImportStatements` 89 → 90（阶段 D 的 `lib/migrations/index.ts` 需要 `getAgentDir()`），理由见基线文件的 `reason`。
+基线变更记录：
+- **2026-10-22**，`sdkImportFiles` 70 → 71、`sdkImportStatements` 89 → 90（阶段 D 的 `lib/migrations/index.ts` 需要 `getAgentDir()`）；
+- **2026-10-22（路线 C）**，71 → **73**、90 → **92**：棘轮本身有两个盲区——`await import("@earendil-works/…")` 完全没统计（导出路由与启动预热都走这条路），以及根目录的 `instrumentation-node.ts` 不在扫描范围内。修正后数字上升，但**没有新增依赖**，理由见基线文件的 `reason`。
 
 ---
 

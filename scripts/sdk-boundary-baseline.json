@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "updatedAt": "2026-10-22",
   "note": "Ratchet for the SDK boundary; see scripts/measure-sdk-boundary.mjs and docs/architecture-improvement-plan.zh-CN.md (stage A5). Metrics may only go down.",
-  "reason": "Raised by 1 file / 1 statement for lib/migrations/index.ts: boot-time migrations must resolve <agentDir> exactly as the SDK does (PI_CODING_AGENT_DIR, else ~/.pi/agent), and re-implementing that in the fork would drift from the SDK. It is infrastructure, not a call-site escape: no SDK type or behaviour is touched there. Every other metric stays a ratchet.",
+  "reason": "Raised for two blind spots the ratchet itself had: lazy `await import(\"@earendil-works/…\")` was invisible (the export route and the startup warm-up use it), and root-level server files (instrumentation-node.ts) were not scanned at all. Those two are now counted, which is why the numbers went up by one file / two statements without any new dependency being added. The earlier raise (lib/migrations/index.ts needing getAgentDir) still stands.",
   "metrics": {
-    "sdkImportFiles": 71,
-    "sdkImportStatements": 90,
+    "sdkImportFiles": 73,
+    "sdkImportStatements": 92,
     "unsafeAssertions": 25
   }
 }

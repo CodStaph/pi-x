@@ -36,6 +36,9 @@ test("counts SDK imports and unsafe assertions in source files only", () => {
       'import type { Model } from "@earendil-works/pi-ai";',
     ].join("\n"),
     "hooks/c.ts": "export const nothing = 1;\n",
+    // A lazy import reaches the SDK just like a static one (it used to be invisible
+    // to the ratchet: the export route and the boot warm-up both load it this way).
+    "lib/lazy.ts": "export const load = () => import(\"@earendil-works/pi-coding-agent\");\n",
     // Ignored: tests are not part of the boundary, and neither are dependencies
     // or dot-directories.
     "lib/a.test.ts": 'import { y } from "@earendil-works/pi-ai";\n',
@@ -46,11 +49,11 @@ test("counts SDK imports and unsafe assertions in source files only", () => {
   try {
     const { metrics, files } = measureSdkBoundary(root);
     assert.deepEqual(metrics, {
-      sdkImportFiles: 2,
-      sdkImportStatements: 3,
+      sdkImportFiles: 3,
+      sdkImportStatements: 4,
       unsafeAssertions: 2,
     });
-    assert.deepEqual(files.map((file) => file.path).sort(), ["lib/a.ts", "lib/nested/b.tsx"]);
+    assert.deepEqual(files.map((file) => file.path).sort(), ["lib/a.ts", "lib/lazy.ts", "lib/nested/b.tsx"]);
     // Sorted by weight so the report leads with the worst offender.
     assert.equal(files[0].path, "lib/a.ts");
   } finally {
