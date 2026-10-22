@@ -179,7 +179,22 @@ type ExtensionCommandContextActionsLike = {
   reload: () => Promise<void>;
 };
 
+/**
+ * Starts a replacement session. Injected by `startRpcSession()` so the wrapper
+ * never imports it: the wrapper calls back into the starter (an extension's
+ * `ctx.newSession`), and the starter constructs the wrapper — a real cycle that a
+ * dependency injection breaks without moving code (stage C2-4 step 1).
+ */
+type StartSession = (
+  sessionId: string,
+  sessionFile: string,
+  cwd: string | undefined,
+  options?: RpcSessionStartOptions,
+) => Promise<{ session: AgentSessionWrapper; realSessionId: string }>;
+
 type AgentSessionWrapperOptions = {
+  /** How an extension command's `ctx.newSession` starts its replacement. */
+  startSession?: StartSession;
   exactSystemPrompt?: () => string;
   chatOnly?: boolean;
   onAgentRunComplete?: AgentRunCompleteListener;
@@ -392,6 +407,7 @@ export class AgentSessionWrapper {
   private closing = false;
   /** What this SDK build exposes; adapted in lib/pi/capabilities.ts, nowhere else. */
   private readonly capabilities: SessionCapabilities;
+  private readonly startSession: StartSession | undefined;
   /**
    * Shadow activity phase (lib/session/state.ts, stage B). Nothing reads it for
    * behaviour yet: `isRunning()` still answers from the flags, and
@@ -410,6 +426,15 @@ export class AgentSessionWrapper {
     this.suppressCompletionNotifications = options.suppressCompletionNotifications ?? false;
     this.mcpHost = options.mcpHost;
     this.capabilities = detectSessionCapabilities(inner);
+    this.startSession = options.startSession;
+  }
+
+  /** The injected starter, or a clear failure when the wrapper was built without one. */
+  private replacementStarter(): StartSession {
+    if (!this.startSession) {
+      throw new Error("Session replacement is unavailable: this wrapper was built without startSession()");
+    }
+    return this.startSession;
   }
 
   get sessionId(): string {
@@ -2204,7 +2229,7 @@ export class AgentSessionWrapper {
   ): Promise<{ cancelled: boolean }> {
     this.emit({ type: "session_replaced", sessionId } as unknown as AgentEvent);
     if (withSession) {
-      const target = started ?? (await startRpcSession(sessionId, sessionFile, undefined)).session;
+      const target = started ?? (await this.replacementStarter()(sessionId, sessionFile, undefined)).session;
       const ctx = target.inner.createReplacedSessionContext?.();
       if (!ctx) throw new Error("This pi version cannot hand the new session to the extension");
       await withSession(ctx);
@@ -2222,7 +2247,7 @@ export class AgentSessionWrapper {
     const toolNames = readSessionToolSelection(entries);
     const model = this.inner.model;
     const thinkingLevel = this.inner.agent.state?.thinkingLevel;
-    const { session, realSessionId } = await startRpcSession(`__ext__${randomUUID()}`, "", this.cwd, {
+    const { session, realSessionId } = await this.replacementStarter()(`__ext__${randomUUID()}`, "", this.cwd, {
       ...(toolNames !== undefined ? { toolNames } : {}),
       ...(model ? { initialModel: { provider: model.provider, modelId: model.id }, allowInitialModelFallback: true } : {}),
       ...(thinkingLevel && THINKING_LEVEL_NAMES.has(thinkingLevel as ThinkingLevel)
@@ -2319,6 +2344,7 @@ const SUBAGENT_CONTROLLER = createSubagentController({
   getSession: (sessionId) => getRegistry().get(sessionId),
   registerSession: (inner, options) => {
     const wrapper = new AgentSessionWrapper(inner, {
+      startSession: startRpcSession,
       ...(options?.exactSystemPrompt !== undefined
         ? { exactSystemPrompt: () => options.exactSystemPrompt! }
         : {}),
@@ -2756,6 +2782,7 @@ export async function startRpcSession(
         : undefined;
     exactSystemPromptRef.current = exactSystemPrompt;
     const wrapper = new AgentSessionWrapper(inner, {
+      startSession: startRpcSession,
       exactSystemPrompt,
       chatOnly,
       onAgentRunComplete: (completedSessionId) => {
