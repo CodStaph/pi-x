@@ -27,6 +27,8 @@ import { toSessionEntries } from "./pi/entries";
 import {
   IDLE_PHASE,
   compareBusy,
+  isBusy,
+  notePhaseMismatch,
   phaseFromFlags,
   reducePhase,
   signalFromAgentEvent,
@@ -254,6 +256,15 @@ const UNSAVED_SESSION_FORK_ERROR =
   "This session has not been saved yet. Send a message before forking it.";
 const COMMANDS_ALLOWED_DURING_SESSION_REPLACEMENT = commandTypesWith("allowedDuringReplacement");
 
+/**
+ * Whether the event-driven phase machine answers `isRunning()` (stage B switch).
+ *
+ * Default is shadow mode: the flags answer, the machine is compared against them.
+ * Set `PI_WEB_SESSION_PHASE=phase` after `getPhaseDiagnostics().risky` has stayed
+ * at 0 in real use — see docs/agents/state-authority.md for the exit condition.
+ */
+const PHASE_DRIVES_RUNNING = process.env.PI_WEB_SESSION_PHASE === "phase";
+
 export interface RpcSessionStartOptions {
   toolNames?: string[];
   initialModel?: { provider: string; modelId: string };
@@ -431,12 +442,16 @@ export class AgentSessionWrapper {
   }
 
   isRunning(): boolean {
-    // `isIdle` (pi ≥ 0.86) spans the whole post-run pipeline — auto-retry
-    // backoff, branch summaries, queued continuations — which the four flags
-    // below cannot see (an agent_end with willRetry=false on the flags looks
-    // idle until the next agent_start). The capability decides whether the SDK
-    // reports it at all; builds without it fall back to the flags.
-    return this._alive && (
+    if (!this._alive) return false;
+    // Once the phase machine has proven itself (PI_WEB_SESSION_PHASE=phase), it is
+    // the single answer; the flags only seeded it (phaseFromCurrentFlags()).
+    if (PHASE_DRIVES_RUNNING) return isBusy(this.phase);
+    // Default: the flags answer. `isIdle` (pi ≥ 0.86) spans the whole post-run
+    // pipeline — auto-retry backoff, branch summaries, queued continuations —
+    // which the four flags below cannot see (an agent_end with willRetry=false on
+    // the flags looks idle until the next agent_start). The capability decides
+    // whether the SDK reports it at all; builds without it fall back to the flags.
+    return (
       this.pendingPromptCount > 0
       || this.inner.isStreaming
       || this.inner.isCompacting
@@ -521,7 +536,10 @@ export class AgentSessionWrapper {
     // A reopened wrapper may already be running (restored mid-run): seed the
     // shadow phase from the flags so its first signal is not compared with a
     // stale `idle`, then make connected sidebars reconcile.
-    if (this.isRunning()) this.phase = this.phaseFromCurrentFlags();
+    // Seed from the flags directly: in phase mode `isRunning()` reads the phase,
+    // so asking it here would leave a mid-run reopen permanently idle.
+    const seeded = this.phaseFromCurrentFlags();
+    if (seeded.kind !== "idle") this.phase = seeded;
     notifyRunningChange();
   }
 
@@ -533,6 +551,11 @@ export class AgentSessionWrapper {
   /** How often the shadow machine disagreed with the flags, by direction. */
   getPhaseMismatches(): { risky: number; conservative: number } {
     return { ...this.phaseMismatches };
+  }
+
+  /** Which implementation answers `isRunning()` (diagnostics only). */
+  static phaseDrivesRunning(): boolean {
+    return PHASE_DRIVES_RUNNING;
   }
 
   private phaseFromCurrentFlags(): SessionPhase {
@@ -556,11 +579,14 @@ export class AgentSessionWrapper {
    */
   private advancePhase(signal: SessionSignal): void {
     if (!this._alive) return;
-    const flagsSayBusy = this.isRunning();
+    // Compare against the flags, not against `isRunning()`: in phase mode that
+    // would compare the machine with itself and the diagnostic would go quiet.
+    const flagsSayBusy = isBusy(this.phaseFromCurrentFlags());
     this.phase = reducePhase(this.phase, signal);
     const mismatch = compareBusy(flagsSayBusy, this.phase);
     if (!mismatch) return;
     this.phaseMismatches[mismatch] += 1;
+    notePhaseMismatch(mismatch, this.sessionId);
     if (mismatch === "conservative" || this.phaseMismatches.risky > 1) return;
     if (process.env.NODE_ENV === "production") return;
     console.warn(

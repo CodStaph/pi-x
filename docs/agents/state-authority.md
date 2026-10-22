@@ -63,13 +63,39 @@ shadow mode:
 - `isRunning()` still answers from the flags. Nothing reads `phase` for
   behaviour.
 
-**Exit condition for shadow mode:** `getPhaseMismatches().risky` stays at 0 across
-a release cycle of real use, including retries, mid-run compaction, branch
-summaries, Stop, `!command`, fork/clone and a page refresh mid-stream. Then —
-and only then — `isRunning()` may return `isBusy(this.phase)`, keeping
-`_alive` in the expression. `isRunning()` is the last consumer to switch; the
-sidebar, the eviction check and the idle timer all read it, so one swap changes
-every one of them at once.
+**Exit condition for shadow mode:** the aggregate `risky` count stays at 0 across a
+release cycle of real use, including retries, mid-run compaction, branch summaries,
+Stop, `!command`, fork/clone and a page refresh mid-stream.
+
+That count is now readable: `GET /api/agent/diagnostics` returns
+
+```json
+{ "sessionPhase": { "mode": "shadow", "risky": 0, "conservative": 0, "sessions": [] } }
+```
+
+totalled per process and per session, `risky` first. Without this endpoint the
+condition could never be checked — `getPhaseMismatches()` only lives on the wrapper.
+
+**The switch already exists and defaults to the flags.**
+`PI_WEB_SESSION_PHASE=phase` makes `isRunning()` return `isBusy(this.phase)`
+(keeping `_alive` in the expression); `AgentSessionWrapper.phaseDrivesRunning()`
+and the diagnostics endpoint report which mode is active. Do not flip the default
+until the counter says 0.
+
+### Why the test suite cannot prove the switch
+
+Running the runtime suites with `PI_WEB_SESSION_PHASE=phase` fails three tests, all
+for the same reason: those suites drive **mock** sessions that flip
+`isStreaming`/`isIdle` booleans directly and never emit `agent_start` /
+`agent_end`. The machine learns state from events, so under mocks it stays idle —
+e.g. `PI_WEB_IDLE_TIMEOUT_MS=0 keeps a session alive after Stop unwinds its run`
+sees `isRunning()` false after `abort` and starts the forced cleanup.
+
+That is a property of the fixtures, not evidence that the machine is wrong — and
+also not evidence that it is right. It means equivalence has to be observed against
+the real SDK, which is exactly what the counter is for. Making the mocks emit
+events would be a rewrite of the runtime suites, and would weaken them (they exist
+to pin behaviour under those very stubs).
 
 **Do not** add a transition by editing `isRunning()`: the machine is the place
 for that, and `lib/session/state.test.mjs` pins the rules.

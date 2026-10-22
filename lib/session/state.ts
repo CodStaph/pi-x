@@ -261,6 +261,55 @@ export function phaseFromFlags(flags: FlagSnapshot): SessionPhase {
 
 export type PhaseMismatch = "risky" | "conservative";
 
+declare global {
+  /**
+   * Process-wide mismatch counters, keyed by session id.
+   *
+   * Stage B asks for a release cycle of observation before `isRunning()` may trust
+   * the machine; without an aggregate that observation cannot happen, because
+   * `AgentSessionWrapper.getPhaseMismatches()` is only reachable from the wrapper
+   * itself. `GET /api/agent/diagnostics` reads this.
+   */
+  var __piWebPhaseMismatches: Map<string, { risky: number; conservative: number }> | undefined;
+}
+
+function mismatchMap(): Map<string, { risky: number; conservative: number }> {
+  if (!globalThis.__piWebPhaseMismatches) globalThis.__piWebPhaseMismatches = new Map();
+  return globalThis.__piWebPhaseMismatches;
+}
+
+/** Record one disagreement for `sessionId` (called by the wrapper's advancePhase). */
+export function notePhaseMismatch(kind: PhaseMismatch, sessionId: string): void {
+  const map = mismatchMap();
+  const entry = map.get(sessionId) ?? { risky: 0, conservative: 0 };
+  entry[kind] += 1;
+  map.set(sessionId, entry);
+}
+
+export interface PhaseDiagnostics {
+  risky: number;
+  conservative: number;
+  /** Sessions that ever disagreed, worst first. */
+  sessions: Array<{ sessionId: string; risky: number; conservative: number }>;
+}
+
+/** Totals plus per-session detail; empty means the machine has never disagreed. */
+export function getPhaseDiagnostics(): PhaseDiagnostics {
+  const sessions = [...mismatchMap().entries()]
+    .map(([sessionId, counts]) => ({ sessionId, ...counts }))
+    .sort((a, b) => b.risky - a.risky || b.conservative - a.conservative);
+  return {
+    risky: sessions.reduce((sum, entry) => sum + entry.risky, 0),
+    conservative: sessions.reduce((sum, entry) => sum + entry.conservative, 0),
+    sessions,
+  };
+}
+
+/** Test hook: forget every recorded mismatch. */
+export function resetPhaseDiagnostics(): void {
+  mismatchMap().clear();
+}
+
 /**
  * Compare the flag-based answer with the event-driven phase.
  *

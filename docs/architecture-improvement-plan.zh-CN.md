@@ -343,7 +343,7 @@ export function isBusy(phase: SessionPhase): boolean;
 
 - `advancePhase(signal)` 在每个信号上同时算「旧 flags 答案」与「新 phase」，把差异分成两个方向；
 - **只有「flags 忙 / phase 闲」告警**（dev 下每种信号一次），因为那是会导致中途驱逐或关闭的方向；反方向只计数（`getPhaseMismatches()`），因为 `agent_end` 之后 phase 有意保持忙、flags 可能已读闲；
-- `isRunning()` **仍是 flags 实现**，测试显式断言它没有切到 `isBusy()`——切换要等 `risky` 计数在一个发布周期里保持 0，条件写在 `docs/agents/state-authority.md`。
+- `isRunning()` 默认仍是 flags 实现；P3 补上了**可观测的开关**：`PI_WEB_SESSION_PHASE=phase` 时走 `isBusy(this.phase)`，`GET /api/agent/diagnostics` 报告当前模式与 `risky`/`conservative` 计数（此前计数只存在于 wrapper 上，观察条件永远无法检查）。切换条件与「为什么测试套件无法证明切换」记录在 `docs/agents/state-authority.md`。
 
 设计要点（与计划草稿的差异）：
 
