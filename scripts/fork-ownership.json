@@ -82,9 +82,9 @@
     },
     "components/ChatInput.tsx": {
       "risk": "high",
-      "drift": 868,
-      "reason": "Composer chrome restyle. Upstream changed this file in v0.8.1, and components/ChatInput.test.mjs covers it.",
-      "structuralDrift": 802,
+      "drift": 1484,
+      "reason": "Composer chrome and controls restyle, the model selector and tool-preset row, and the submission pipeline (now delegated to lib/composer-send.ts, so the decision order is tested outside the component). Upstream changed this file in v0.8.1; components/ChatInput.test.mjs and lib/composer-send.test.mjs cover it, and test/merge-guards/fork-extractions.test.mjs pins the composer markers.",
+      "structuralDrift": 1106,
       "disposition": "accepted"
     },
     "components/MessageView.tsx": {

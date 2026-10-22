@@ -14,6 +14,7 @@ const { renderToStaticMarkup } = await jiti.import("react-dom/server");
 const { ChatInput, ModelErrorBanner, WorkspaceUnavailableBanner, ModelScopeWarningBanner, canClearBuiltinCommandInput, canRestoreUserMessage, canRunBuiltinSlashCommandWhileStreaming, compressImageFile, cycleListIndex, filterModelOptions, getTopbarBoundary, getUpwardMenuMaxHeight, getUserMessageText, getUserMessageDraftImages, isExactSlashCommand, modelSupportsImageInput, replaceLinksWithMarkdown, shouldCompressImageFile, offersBuiltinSlashCommandWhileStreaming, submitsSlashCommandOnEnter} = await jiti.import("./ChatInput");
 
 const { isBareMcpCommand } = await jiti.import("@/lib/mcp-command");
+const { runComposerSend } = await jiti.import("../lib/composer-send");
 const { ModelSelector } = await jiti.import("./ModelSelector");
 const { clearDraft, getDraft, mergeRestoredSubmissionDraft, mergeRestoredSubmissionText, rekeyDraft, setDraft } = await jiti.import("@/lib/draft-store");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
@@ -693,23 +694,20 @@ test("while a run streams, a bare /mcp opens Settings or is queued as before", a
   }
 });
 
-test("handleSend lets a handled /mcp through while streaming and sends an unowned one when idle", async () => {
+test("a handled /mcp goes through while streaming and an unowned one is sent when idle", async () => {
   const run = async (value, { isStreaming, handled }) => {
     const calls = { builtin: [], sent: [] };
-    const handleSend = chatInputCallback("handleSend", {
+    await runComposerSend({
       value,
       attachedImages: [],
-      workspaceUnavailable: null,
-      onAudioUnlock() {},
       isStreaming,
-      offersBuiltinSlashCommandWhileStreaming,
-      resolveSessionReferences: async (message) => message,
-      sessionMentionTargetsRef: { current: new Map() },
-      runBuiltinCommand: async (message) => { calls.builtin.push(message); return handled; },
-      clearInput() {},
-      onSend: (message) => calls.sent.push(message),
+      workspaceUnavailable: null,
+      offersBuiltinWhileStreaming: offersBuiltinSlashCommandWhileStreaming(value.trim()),
+      runBuiltin: async (message) => { calls.builtin.push(message); return handled; },
+      resolveMessage: async (message) => message,
+      send: (message) => calls.sent.push(message),
+      clear() {},
     });
-    await handleSend();
     return calls;
   };
   assert.deepEqual(await run("/mcp", { isStreaming: true, handled: true }), { builtin: ["/mcp"], sent: [] });
@@ -925,35 +923,30 @@ test("renders image warnings for known text-only defaults without an explicit mo
   }
 });
 
-test("handleSend sends exactly once and routes builtin commands through the pending guard", async () => {
-  const source = ts.createSourceFile("ChatInput.tsx", readFileSync(new URL("./ChatInput.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  function findHandler(node) {
-    if (ts.isVariableDeclaration(node) && node.name.getText(source) === "handleSend") {
-      return node.initializer.arguments[0];
-    }
-    return ts.forEachChild(node, findHandler);
-  }
-  const script = new Script(ts.transpileModule(findHandler(source).getText(source), {
-    compilerOptions: { target: ts.ScriptTarget.ES2020 },
-  }).outputText);
-
-  function run({ value = "hello", attachedImages = [], builtinHandled = false, resolved = null, workspaceUnavailable = null }) {
-    let sends = 0;
-    let cleared = 0;
-    let builtinCalls = 0;
-    const handler = script.runInNewContext({
-      value, attachedImages, isStreaming: false, workspaceUnavailable,
-      onAudioUnlock() {},
-      runBuiltinCommand: async () => {
-        builtinCalls += 1;
+test("a submission sends exactly once, stops at a handled built-in and stays blocked by a missing workspace", async () => {
+  // The decision order lives in lib/composer-send.ts now; this keeps the composer
+  // contract (one send) covered without transpiling the component in a VM. The
+  // delegation itself is pinned by the source assertion at the end.
+  async function run({ value = "hello", attachedImages = [], builtinHandled = false, resolved = null, workspaceUnavailable = null }) {
+    const calls = { sends: 0, cleared: 0, builtinCalls: 0, sent: null };
+    await runComposerSend({
+      value,
+      attachedImages,
+      isStreaming: false,
+      workspaceUnavailable,
+      offersBuiltinWhileStreaming: offersBuiltinSlashCommandWhileStreaming(String(value).trim()),
+      runBuiltin: async () => {
+        calls.builtinCalls += 1;
         return builtinHandled;
       },
-      resolveSessionReferences: async (msg) => resolved ?? msg,
-      sessionMentionTargetsRef: { current: [] },
-      onSend(message, images) { sends += 1; handler.sent = { message, images }; },
-      clearInput() { cleared += 1; },
+      resolveMessage: async (message) => resolved ?? message,
+      send: (message, images) => {
+        calls.sends += 1;
+        calls.sent = { message, images };
+      },
+      clear: () => { calls.cleared += 1; },
     });
-    return handler().then(() => ({ sends, cleared, builtinCalls, sent: handler.sent }));
+    return calls;
   }
 
   // Plain message: one send of the resolved text, one clear, no double-send.
@@ -986,6 +979,12 @@ test("handleSend sends exactly once and routes builtin commands through the pend
     assert.equal(local.builtinCalls, 1);
     assert.equal(local.sends, 0);
   }
+
+  // The composer itself only delegates: it does not re-implement the order.
+  const chatInput = readFileSync(new URL("./ChatInput.tsx", import.meta.url), "utf8");
+  const sendBody = chatInput.slice(chatInput.indexOf("const handleSend = useCallback"), chatInput.indexOf("}, [value, attachedImages"));
+  assert.match(sendBody, /await runComposerSend\(\{/);
+  assert.doesNotMatch(sendBody, /onSend\(resolvedMessage/, "handleSend must not send on its own");
 });
 
 test("unavailable workspaces show their reason and keep the draft visible with Send disabled", () => {

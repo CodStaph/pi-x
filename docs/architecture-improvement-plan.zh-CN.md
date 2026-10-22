@@ -419,6 +419,8 @@ export function isBusy(phase: SessionPhase): boolean;
 | C2-4 | `lib/session/wrapper.ts` | `fork-ownership.json`：`lib/rpc-manager.ts` structural **652 / high** | **必须独立窗口**。跨文件移动正是该文件 `reason` 警告的"clean merge 但语义错"；合并后要立即重算 drift |
 | C2-5 | `lib/composer-send.ts` | `ChatInput.tsx` structural **1087 / high** | **只抽纯判定**（`submitsSlashCommandOnEnter` 一类），不搬整条发送管线：`handleSend` 依赖 20+ props/refs，而那段 VM 测试正是防"合并不被静默改写"的哨兵 |
 
+**C2-5 已落地（2026-10-22，收窄为「纯决策 + 委托」）**：新增 `lib/composer-send.ts` 的 `runComposerSend(ctx)`，`ChatInput.handleSend` 只组装上下文并委托；`lib/composer-send.test.mjs`（9 项）验证提交顺序与「一次提交只发一次」。原 `ChatInput.test.mjs` 里两条通过 AST 提取 `handleSend` 的 VM 测试改为直接调用该函数（键盘语义的 VM 测试保持不变），并新增一条「handleSend 只委托、不自己 onSend」的源码断言。`ChatInput.tsx` 的 drift 已重算（1484 / 1106）。
+
 **治理联动（已做）**：按 AGENTS.md「significant change to a shared file 后重跑 drift」，`scripts/fork-ownership.json` 里 `lib/rpc-manager.ts` 的 `drift`/`structuralDrift` 由 109/595 更新为 652/652，`reason` 记录了 registry 迁出与 wrapper/命令开关的迁移前置条件。
 
 **顺带发现的既有偏差**：`node scripts/measure-fork-drift.mjs 6fcd7d4` 报告 `components/FileExplorer.tsx` 算出 medium 而 manifest 记 low（本次改动未触碰该文件）。这正是阶段 E1 要把 drift 接进 CI 的理由——人工执行的度量会漂移。
@@ -583,7 +585,7 @@ export const MIGRATIONS: Migration[] = [];
 
 第一次运行抓到 21 处，按原因分别处理：`lib/startup-preferences.ts`（刻意删除，3 处）、`app/api/models/test`（文档明说不是路由，2 处）、`components/McpPanel.tsx` + `lib/mcp-config.ts`（merge-history 的历史记录）、`lib/i18n/messages/ja.ts`（i18n 指令里的示例）、C 阶段尚未创建的 `lib/session/start.ts` / `lib/session/wrapper.ts` / `lib/composer-send.ts`；另有一处文档表述改为 `<agentDir>/desktop/cost-currency.json`（原写法会被当成仓库路径）。
 
-**F2 的取舍**：计划要求「先把 3 条 `assert.match` 改写成行为断言再搬文件」，实际只做了迁移。原因是唯一符合条件的候选是 `components/ChatInput.test.mjs` 的 VM 测试，而它依赖 C2-5（抽出 `lib/composer-send.ts`）——在管线抽出来之前改写，只能把脆弱断言换成另一种脆弱断言。文档里保留了这条前置关系。
+**F2 的取舍**：计划要求「先把 3 条 `assert.match` 改写成行为断言再搬文件」，迁移当次只做了迁移，因为唯一符合条件的候选是 `components/ChatInput.test.mjs` 的 VM 测试，而它依赖 C2-5。C2-5 落地后这条已补上：那两条提取 `handleSend` 的 VM 测试现在直接调用 `runComposerSend`（两组用例、8 条断言变成对真实函数的调用），保留的 VM 测试只剩键盘语义（`handleKeyDown` 的分支表）——它与组件的事件处理绑定，不应被抽走。
 
 **F3 的结论**：先有基线，不改代码。50 文件冷启动 44.7 ms、热 10.0 ms，远未到需要优化同步 fs 的程度；`session-reader.ts` 保持原样。脚本用子进程 + `PI_CODING_AGENT_DIR` 指向临时目录，因此永远不会碰用户的真实会话。
 
@@ -674,11 +676,13 @@ L3 完全分叉        vendor SDK、自建迁移层、放弃 merge-guard
 | 桌面多窗口 | `globalThis` 会话注册表、桌面 token | 单实例 ADR + 每窗口 lease |
 | 输入框继续加功能（语音、更多引用） | `ChatInput.tsx` 3,491 行 | 发送管线抽成纯函数（C2-5） |
 
-### 单实例一致性 ADR（建议新开一篇）
+### 单实例一致性 ADR（已落地：`docs/adr/0008-single-instance-state.md`）
 
 `globalThis` 注册表、启动锁、SSE 广播隐含**单进程**，但产品形态允许桌面 App 与 `npx pi-web` 同时运行并共享 `~/.pi/agent`。代码里已有分散应对（scheduler 文件 lease、`removeStoredCredentialIfType` 的文件锁、`server-launcher.cjs` 的父进程看门狗），但**没有成文边界**。
 
 ADR 应包含：哪些状态必须跨进程一致、用什么机制、哪些允许各进程独立，并附一张**写入路径清单**（新增写入点时在 PR 模板里勾选）。
+
+已写入 `docs/adr/0008-single-instance-state.md`：26 个 `globalThis` 状态的清单、三类共享文件写入（加锁 / 原子替换 / 仅追加）、session 文件"单写者"规则与 `evictIfDiskAhead()` 的边界、定时任务的租约、以及四条重新评估的触发条件。调研中修正了一个假设——`settings.json` / `auth.json` / `mcp.json` **已经**由 `proper-lockfile` 保护，真正"最后写入者胜"的只有 `models.json`、`agents/settings.json`、`desktop/*.json` 这类原子替换。
 
 ---
 

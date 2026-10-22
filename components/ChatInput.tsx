@@ -1,5 +1,6 @@
 "use client";
 import type { UnavailableWorkspace } from "@/lib/workspace-availability";
+import { runComposerSend } from "@/lib/composer-send";
 
 import React, { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo, useImperativeHandle, forwardRef, KeyboardEvent } from "react";
 import type { BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages, SlashCommandInfo } from "@/hooks/useAgentSession";
@@ -1262,17 +1263,21 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
   }, [attachedImages.length, clearInput, onBuiltinCommand]);
 
+  // The decision order and its side effects live in lib/composer-send.ts, where
+  // they can be tested without mounting the composer (exactly one send per press).
   const handleSend = useCallback(async () => {
-    const msg = value.trim();
-    if (!msg && !attachedImages.length) return;
-    onAudioUnlock?.();
-    const builtinAllowed = !isStreaming || offersBuiltinSlashCommandWhileStreaming(msg);
-    if (builtinAllowed && await runBuiltinCommand(msg)) return;
-    if (isStreaming) return;
-    if (workspaceUnavailable) return;
-    const resolvedMessage = await resolveSessionReferences(msg, sessionMentionTargetsRef.current);
-    onSend(resolvedMessage, attachedImages.length ? attachedImages : undefined);
-    clearInput();
+    await runComposerSend({
+      value,
+      attachedImages,
+      isStreaming,
+      workspaceUnavailable,
+      offersBuiltinWhileStreaming: offersBuiltinSlashCommandWhileStreaming(value.trim()),
+      ...(onAudioUnlock ? { unlockAudio: onAudioUnlock } : {}),
+      runBuiltin: runBuiltinCommand,
+      resolveMessage: (message) => resolveSessionReferences(message, sessionMentionTargetsRef.current),
+      send: onSend,
+      clear: clearInput,
+    });
   }, [value, attachedImages, workspaceUnavailable, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock]);
 
   const slashQuery = !compact && value.startsWith("/") && !/\s/.test(value.slice(1))

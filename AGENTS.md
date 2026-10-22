@@ -423,6 +423,9 @@ The pi CLI's `AgentSessionRuntime` replaces its single session in place; Pi Web 
 ### Merge guard tests live in `test/merge-guards/`
 Assertions *about the repository* (source markers, manifest/sentinel agreement) are not behaviour tests: they belong in `test/merge-guards/` (see its README), while a test that renders a component or calls a reducer stays beside its code. `scripts/run-tests.mjs` collects `test/` too. `npm run check:ownership` fails when a `high`-risk file in `scripts/fork-ownership.json` has no guard there (or opts out without a reason), and `npm run check:docs` fails when a doc sentence points at a path that no longer exists.
 
+### One process owns an agent directory
+`docs/adr/0008-single-instance-state.md`: the desktop app, `npx pi-web` and the `pi` CLI all read `~/.pi/agent`, but only one pi-web server is *the* owner of in-process state. The 26 `globalThis` blocks are a hot-reload device, never a cross-process protocol; shared files are written either under `proper-lockfile` (settings/auth/mcp), as atomic replace with last-writer-wins (models/agents/desktop JSON), or append-only (sessions, run logs). One writer per session file — `evictIfDiskAhead()` detects a foreign append, it does not exclude one.
+
 ### Upstream merge sentinels (not the same "fork" as session fork)
 This repo is a fork of `agegr/pi-web` and periodically merges upstream. `test/merge-guards/fork-extractions.test.mjs` guards the failure mode that a clean merge can still be wrong: code this fork *moved* to another file reappears at its origin, or a fork change is silently reverted. Git does not track cross-file moves, so neither shows up in `tsc`, eslint, or the upstream suite.
 
