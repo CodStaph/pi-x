@@ -34,7 +34,9 @@ jobs:
             # emit each failing test as one, then fail the step.
             # Non-TTY output (CI) is TAP, so failures read "not ok N - name",
             # not "✖ name": match both, plus the assertion lines under them.
-            grep -E '^(not ok |✖ )|^[[:space:]]+(error|expected|actual|operator):' test.log |
+            # `location:` carries the test file and line, so the annotation names
+            # both the failing test and where it lives.
+            grep -E '^(not ok |✖ )|^[[:space:]]+(error|expected|actual|operator|location):' test.log |
               head -40 | while IFS= read -r line; do
                 echo "::error::${line}"
               done
