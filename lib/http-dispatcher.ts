@@ -69,6 +69,9 @@ export function configureHttpDispatcher(
     new undici.EnvHttpProxyAgent({
       allowH2: false,
       bodyTimeout: normalizedTimeoutMs,
+      // Node's 250 ms default can terminate valid connection attempts on
+      // high-latency routes; the pi CLI's dispatcher waits two seconds here.
+      connect: { autoSelectFamilyAttemptTimeout: 2_000 },
       headersTimeout: normalizedTimeoutMs,
       clientFactory: createUndiciClient,
       factory: createUndiciOriginDispatcher,
