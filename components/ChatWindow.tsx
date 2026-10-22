@@ -31,6 +31,7 @@ import type { SettingsSection } from "@/lib/settings-navigation";
 import { findChatScrollAnchor, type ChatScrollPosition } from "@/lib/chat-scroll-position";
 import {
   captureScrollDistance,
+  getNextVisibleCount,
   getPromptAnchorSpacerHeight,
   getVisibleRenderWindow,
   isScrollAtTail,
@@ -513,7 +514,10 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     () => (lazyLoadSessionKey != null ? sessionVisibleCounts.get(lazyLoadSessionKey) : undefined) ?? VISIBLE_PAGE_SIZE,
   );
   const [appliedLazyLoadSessionKey, setAppliedLazyLoadSessionKey] = useState(lazyLoadSessionKey);
-  const sentinelRef = useRef<HTMLDivElement>(null);
+  // Upstream #896: state, not a ref — the sentinel can appear with nothing else
+  // changing (a finished turn regrouped into more rows) and must get an observer
+  // then. The fork's per-session window memory above is kept as it was.
+  const [sentinel, setSentinel] = useState<HTMLDivElement | null>(null);
   const messageContentRef = useRef<HTMLDivElement | null>(null);
   const prevScrollDistanceRef = useRef<number | null>(null);
   const loadingOlderRef = useRef(false);
@@ -705,17 +709,24 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   // IntersectionObserver on the sentinel div at the top of the message list.
   // When it becomes visible, load the next page of older messages.
   useEffect(() => {
-    const sentinel = sentinelRef.current;
     const container = scrollContainerRef.current;
     if (!sentinel || !container) return;
     const observer = new IntersectionObserver(
       (entries) => {
         if (!entries[0]?.isIntersecting) return;
-        // No older history loaded yet: fetch the previous page from the server
-        // and prepend it (loadContext handles prepend + scroll anchoring).
-        // Skip while a page is already loading or nothing older exists.
+        // Skip while a page is already loading.
         if (loadingOlderRef.current) return;
-        if (!hasEarlierMessages) return;
+        if (!hasEarlierMessages) {
+          // Everything is loaded, yet the sentinel shows: the messages render as
+          // more rows than the window holds (an answer and its thinking are
+          // two), so widen the window. The observer is renewed with it, in case
+          // the sentinel stays in view.
+          prevScrollDistanceRef.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
+          setVisibleCount((current) => getNextVisibleCount(current));
+          return;
+        }
+        // Fetch the previous page from the server and prepend it (loadContext
+        // handles prepend + scroll anchoring).
         const oldestId = historyCursor;
         if (!oldestId) return;
         const sid = session?.id ?? sessionIdRef.current;
@@ -730,7 +741,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [historyCursor, hasEarlierMessages, session, activeLeafId, loadContext, sessionIdRef, scrollContainerRef]);
+  }, [sentinel, visibleCount, historyCursor, hasEarlierMessages, session, activeLeafId, loadContext, sessionIdRef, scrollContainerRef]);
 
   // Keep the rendered window at least as large as what's loaded, so prepended
   // (older) pages stay visible instead of being sliced off the top.
@@ -1485,7 +1496,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               return (
                 <>
                   {hasMore && (
-                     <div ref={sentinelRef} className="py-3 text-center text-xs text-text-muted">
+                     <div ref={setSentinel} className="py-3 text-center text-xs text-text-muted">
                        {t("chat.loadEarlier")}
                     </div>
                   )}

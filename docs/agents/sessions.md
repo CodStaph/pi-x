@@ -32,8 +32,17 @@ Browser display copies omit content-block `thinkingSignature`, `textSignature`, 
 ## SSE reconnect on page refresh mid-stream
 On mount `useAgentSession` loads the history, then `GET /api/sessions/[id]/state` (`loadSession(…, includeState)`): `state.isStreaming` or `state.isPromptRunning` resumes the run in the UI, and `thinkingLevel` / `isCompacting` sync from it. No reconnect is needed: the selected session's stream stays open whether or not it runs (`maintainEventsConnected()`, warm-session effect), and its `connected` event carries `isStreaming`.
 
+## Loading older history (`components/ChatWindow.tsx`)
+The chat renders the last `visibleCount` rows, kept at least the loaded message count, with a sentinel above them while rows are hidden or the server has older entries (`hasEarlierMessages`, paged with `loadContext(…, before)`). Rows are not messages: a turn's answer and its thinking render as two, so loaded rows can outnumber the window; with nothing older on the server, reaching the sentinel widens the window (`getNextVisibleCount()`). The sentinel element is state (a callback ref), so the observer attaches whenever it appears, and the observer is renewed when the window grows: IntersectionObserver reports only changes, so a sentinel still in view would wait for the user to scroll away and back.
+
 ## Compaction SSE events
 `handleAgentEvent` accepts `compaction_start` / `compaction_end` and the older `auto_compaction_*` pair to keep `isCompacting` in sync. Manual compact is a blocking POST: `isCompacting` holds until it returns, the button meanwhile Stop compaction (`abort_compaction`).
+
+## Streaming token rate
+The streaming reply's `t/s` counts estimated tokens from when its first ones showed. That start lives in `lib/stream-token-rate.ts`, keyed by the reply (provider, model and request `timestamp`), not in `MessageView`: switching sessions remounts the chat, and a start taken at the remount divided every token streamed so far by a fraction of a second. A reply joined with no record (a reload) counts only the tokens that follow.
+
+## Auto-retry banner
+`auto_retry_start` shows "Retrying (n/max)…" above the composer for the backoff wait. The retried run's `agent_start` clears it, as pi's TUI replaces its retry indicator at that run's `turn_start`: pi emits a successful `auto_retry_end` only with the retry's first complete assistant message, minutes into a long reply. `auto_retry_end`, `agent_end` and settling clear it too.
 
 ## Tool execution events on the SSE stream
 - Calls made through `ctx.executeTool()` (a codemode script's) emit `tool_execution_*` with `parentToolCallId` and ids `<parent>/<n>`. `toClientAgentEvent()` sends their start and end slim and drops their updates; test for nesting *before* rebuilding an update, which keeps only `toolCallId`, `toolName` and `partialResult` (a nested update would reach the browser as a top-level tool). `handleAgentEvent` keeps them out of the running-tools phase; `AgentSessionWrapper` never records them for replay, a parent's end forgets every id under `<parent>/`, and `agent_end` clears the replay set.

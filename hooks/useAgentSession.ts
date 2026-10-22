@@ -1574,6 +1574,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           setAgentRunning(true);
           setAgentPhase({ kind: "waiting_model" });
         }
+        // (#1031 in upstream reads context usage here too, but that call belongs to
+        // upstream's #1058 usage-refresh refactor, which is not ported.)
         break;
       }
       case "agent_start":
@@ -1582,6 +1584,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         agentRunningRef.current = true;
         setAgentRunning(true);
         setAgentPhase({ kind: "waiting_model" });
+        // A retry's wait is over once its run starts, as pi's TUI shows it: the
+        // successful auto_retry_end comes only with the retry's first complete
+        // reply, which can stream for minutes.
+        setRetryInfo(null);
         dispatch({ type: "start" });
         break;
       case "agent_end":
