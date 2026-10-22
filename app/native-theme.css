@@ -4008,6 +4008,11 @@ html:not(.dark) .session-item.is-selected .session-item-time {
    wrap prose within the panel, not scroll horizontally. The wrapper keeps
    overflow-x for genuinely unbreakable overflow. */
 .markdown-table-wrap > table { width: auto; }
+/* Upstream #1054: an ordered-list marker wider than the list's left padding is
+   clipped by .markdown-body's overflow-x. MarkdownBody sets --ol-marker-digits to
+   the widest number, so the padding follows it. The upstream rule lives in
+   globals.css, which stays byte-identical here. */
+.markdown-body ol { padding-left: calc(0.8em + var(--ol-marker-digits, 2) * 0.62em); }
 .markdown-body th, .markdown-body td {
   border: 0;
   border-bottom: var(--hairline) solid var(--border);
