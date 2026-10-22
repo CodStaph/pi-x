@@ -18,7 +18,7 @@
 
 import { execFileSync } from "node:child_process";
 import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { readForkOwnership } from "./fork-ownership.mjs";
 
@@ -88,98 +88,107 @@ export function driftProblems(classified) {
   };
 }
 
-function resolveBaseline(explicit) {
+function resolveBaseline(explicit, manifest) {
   if (explicit) return explicit;
   try {
     return git("merge-base", "HEAD", "pi-web-upstream/main").trim();
   } catch {
-    const manifest = baselineFromManifest();
-    console.error(`No pi-web-upstream remote; falling back to tag ${manifest}.`);
-    return manifest;
+    const fallback = baselineFromManifest(manifest);
+    console.error(`No pi-web-upstream remote; falling back to tag ${fallback}.`);
+    return fallback;
   }
 }
 
-let cachedManifest;
-function baselineFromManifest() {
-  cachedManifest ??= manifest;
+function baselineFromManifest(manifest) {
   // `upstreamBaseline` is the human-readable description ("main@6fcd7d4 (v0.10.0)"),
   // which `git diff` cannot resolve; the commit beside it is the revision to use.
-  return cachedManifest.upstreamBaselineCommit ?? cachedManifest.upstreamBaseline;
+  return manifest.upstreamBaselineCommit ?? manifest.upstreamBaseline;
 }
 
-const manifest = await readForkOwnership();
-const baseline = resolveBaseline(process.argv[2]);
+/**
+ * The CLI. Kept behind a main guard: importing this module (its classifier is
+ * tested by scripts/fork-drift.test.mjs) must not run `git diff`, which would
+ * fail anywhere the baseline commit is absent — CI checks out a single commit.
+ */
+async function main() {
+  const manifest = await readForkOwnership();
+  const baseline = resolveBaseline(process.argv[2], manifest);
 
-// Diffed against the working tree, not HEAD, so the effect of an in-progress
-// revert is visible before it is committed.
-const files = git("diff", "--name-status", baseline)
-  .split("\n")
-  .filter((line) => line.startsWith("M\t"))
-  .map((line) => line.split("\t")[1])
-  .filter((file) => /^(?:components|hooks|lib|app)\/.*\.tsx?$/.test(file));
+  // Diffed against the working tree, not HEAD, so the effect of an in-progress
+  // revert is visible before it is committed.
+  const files = git("diff", "--name-status", baseline)
+    .split("\n")
+    .filter((line) => line.startsWith("M\t"))
+    .map((line) => line.split("\t")[1])
+    .filter((file) => /^(?:components|hooks|lib|app)\/.*\.tsx?$/.test(file));
 
-const rows = files.map((file) => {
-  const diff = git("diff", "-U0", baseline, "--", file);
-  let cosmetic = 0;
-  let structural = 0;
+  const rows = files.map((file) => {
+    const diff = git("diff", "-U0", baseline, "--", file);
+    let cosmetic = 0;
+    let structural = 0;
 
-  for (const line of diff.split("\n")) {
-    if (!/^[+-]/.test(line) || /^(?:\+\+\+|---)/.test(line)) continue;
-    const body = line.slice(1);
-    if (!body.trim()) continue;
-    if (COSMETIC.test(body)) cosmetic += 1;
-    else structural += 1;
-  }
+    for (const line of diff.split("\n")) {
+      if (!/^[+-]/.test(line) || /^(?:\+\+\+|---)/.test(line)) continue;
+      const body = line.slice(1);
+      if (!body.trim()) continue;
+      if (COSMETIC.test(body)) cosmetic += 1;
+      else structural += 1;
+    }
 
-  return { file, cosmetic, structural, total: cosmetic + structural };
-});
+    return { file, cosmetic, structural, total: cosmetic + structural };
+  });
 
-rows.sort((a, b) => b.structural - a.structural);
+  rows.sort((a, b) => b.structural - a.structural);
 
-console.log(`baseline: ${baseline}\n`);
-console.log(
-  "file".padEnd(34),
-  "total".padStart(6),
-  "cosmetic".padStart(9),
-  "structural".padStart(11),
-  "  risk",
-);
-
-const classified = classifyDriftRows(rows, manifest);
-for (const row of classified) {
-  const stale = row.stale ? `  <- manifest says ${row.recordedRisk}` : "";
-  const missing = row.unrecorded ? `  <- not in manifest (${row.risk})` : "";
+  console.log(`baseline: ${baseline}\n`);
   console.log(
-    row.file.padEnd(34),
-    String(row.total).padStart(6),
-    String(row.cosmetic).padStart(9),
-    String(row.structural).padStart(11),
-    `  ${row.risk}${stale}${missing}`,
+    "file".padEnd(34),
+    "total".padStart(6),
+    "cosmetic".padStart(9),
+    "structural".padStart(11),
+    "  risk",
   );
+
+  const classified = classifyDriftRows(rows, manifest);
+  for (const row of classified) {
+    const stale = row.stale ? `  <- manifest says ${row.recordedRisk}` : "";
+    const missing = row.unrecorded ? `  <- not in manifest (${row.risk})` : "";
+    console.log(
+      row.file.padEnd(34),
+      String(row.total).padStart(6),
+      String(row.cosmetic).padStart(9),
+      String(row.structural).padStart(11),
+      `  ${row.risk}${stale}${missing}`,
+    );
+  }
+  const { stale, unrecorded } = driftProblems(classified);
+
+  const totals = rows.reduce(
+    (acc, row) => ({ c: acc.c + row.cosmetic, s: acc.s + row.structural }),
+    { c: 0, s: 0 },
+  );
+  const structuralShare = Math.round((totals.s / (totals.c + totals.s)) * 100);
+  console.log(
+    `\ncosmetic: ${totals.c}   structural: ${totals.s}   (${structuralShare}% structural)`,
+  );
+
+  if (stale.length > 0 || unrecorded.length > 0) {
+    // A recorded risk that no longer matches the measurement means the manifest
+    // (and the auto-push policy built on it) is stale.
+    if (stale.length > 0) {
+      console.error(`\n${stale.length} file(s) disagree with scripts/fork-ownership.json — update the recorded risk.`);
+    }
+    // Drift nobody recorded is drift autoPushPolicy cannot block on: an upstream
+    // edit to that file syncs unattended. Also the reason this check exists.
+    if (unrecorded.length > 0) {
+      console.error(`\n${unrecorded.length} drifted file(s) are not in scripts/fork-ownership.json:`);
+      for (const row of unrecorded) console.error(`- ${row.file} (${row.risk}, ${row.structural} structural)`);
+      console.error("Record each one with a reason, or the auto-push policy cannot block on it.");
+    }
+    process.exitCode = 1;
+  }
 }
-const { stale, unrecorded } = driftProblems(classified);
 
-const totals = rows.reduce(
-  (acc, row) => ({ c: acc.c + row.cosmetic, s: acc.s + row.structural }),
-  { c: 0, s: 0 },
-);
-const structuralShare = Math.round((totals.s / (totals.c + totals.s)) * 100);
-console.log(
-  `\ncosmetic: ${totals.c}   structural: ${totals.s}   (${structuralShare}% structural)`,
-);
-
-if (stale.length > 0 || unrecorded.length > 0) {
-  // A recorded risk that no longer matches the measurement means the manifest
-  // (and the auto-push policy built on it) is stale.
-  if (stale.length > 0) {
-    console.error(`\n${stale.length} file(s) disagree with scripts/fork-ownership.json — update the recorded risk.`);
-  }
-  // Drift nobody recorded is drift autoPushPolicy cannot block on: an upstream
-  // edit to that file syncs unattended. Also the reason this check exists.
-  if (unrecorded.length > 0) {
-    console.error(`\n${unrecorded.length} drifted file(s) are not in scripts/fork-ownership.json:`);
-    for (const row of unrecorded) console.error(`- ${row.file} (${row.risk}, ${row.structural} structural)`);
-    console.error("Record each one with a reason, or the auto-push policy cannot block on it.");
-  }
-  process.exitCode = 1;
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  await main();
 }
