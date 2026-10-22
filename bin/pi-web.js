@@ -25,6 +25,8 @@ const { wireChildProcessLifecycle } = require("./process-lifecycle");
 const { getNetworkExposureWarning } = require("./network-exposure-warning");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { attachReadyHandoff, shouldOpenBrowser } = require("../lib/browser-open");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { rotatePreviewSecrets, getRotationWarning } = require("./rotate-preview-secrets");
 
 let launchOptions;
 try {
@@ -68,6 +70,16 @@ if (!fs.existsSync(nextDir)) {
   process.exit(1);
 }
 
+// Replace the published preview-mode secrets with fresh random values so the
+// previewModeId baked into the npm tarball cannot be used to skip the proxy
+// (via the x-prerender-revalidate header). Must happen before `next start`.
+const rotation = rotatePreviewSecrets(nextDir);
+if (!rotation.ok) {
+  console.warn(getRotationWarning(rotation.reason));
+}
+
+// The fork moved the hostname warnings into bin/network-exposure-warning.js;
+// upstream's inline copy (password over HTTP, no auth) is already covered there.
 const exposureWarning = getNetworkExposureWarning(hostname);
 if (exposureWarning) console.warn(exposureWarning);
 
