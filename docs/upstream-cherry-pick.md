@@ -53,6 +53,9 @@ assertion.
 |---|---|---|
 | `cf3ebfb` fix(security): rotate preview-mode secrets at startup | `23929fb` | closed a proxy bypass (`x-prerender-revalidate` skipped `proxy.ts`). Conflicts: kept the fork's `network-exposure-warning` module instead of upstream's inline copy; skipped the read-only-directory test on Windows. |
 | `6425d0d` perf(server): start the pi SDK import at startup | `e515054` | auto-merged. Note: `lib/migrations` already imports `getAgentDir`, so the SDK is loaded during register() anyway; the warm-up makes that independent of the accident. Fixing the ratchet's blind spots (lazy imports, root files) raised its baseline to 73 / 92 / 25. |
+| `3ff7e1d` fix(terminal): keep input alive when the phone keyboard collapses the panel | `41a7514` | rows ≥ 1 accepted and clamped to 2 on both sides. |
+| `11c2aa2` fix(worktrees): group a bare clone's worktrees under the clone | `80f8f42` | `repoRootFromCommonDir()` walks up to the owning checkout. |
+| `a3a158a` fix(models): list models in pi's /model order | `cc23998` | new `orderSelectorModels()`; conflicts needed both test blocks and the fork's `buttonTitle` restored for its aria-label. |
 | `37d4045` fix(sw): don't hold static responses behind the cache write | `46c325c` | clean apply; the response no longer waits for the cache write. |
 | `8347ea5` fix(markdown): stop clipping two-digit ordered list numbers | `c65a8ae` | adapted: padding rule in `app/native-theme.css`, `MarkdownBody`'s `ol` sets `--ol-marker-digits`. |
 | `6d4d6b5` fix(markdown): render emphasis next to CJK punctuation | `2996447` | adds the `remark-cjk-friendly` devDependency (lock updated, tauri pin still passes). |
@@ -160,6 +163,14 @@ that check comes before the cherry-pick.
 3. **Does the commit assume an earlier refactor?**
    Read the diff for fields/constants that do not exist here. A single commit in
    the middle of a series is not portable on its own; take the series or skip it.
+
+## Candidate pool status
+
+After 17 ports and 7 rejections, the automated filter (files exist here, at most
+two manifest hits, no high-risk file) is exhausted: the remaining fixes all touch
+the large runtime files the wrapper split would also rewrite. The next candidates
+need either the merge window (stage C2-3/C2-4) or a deliberate decision to port a
+series rather than a commit.
 
 ## Not ported on purpose
 
