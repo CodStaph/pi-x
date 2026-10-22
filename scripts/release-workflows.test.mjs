@@ -78,7 +78,8 @@ test("no test file is left out of npm test", async () => {
     .split("\n")
     .filter(Boolean);
 
-  const covered = tracked.filter((file) => /^(app|lib|scripts|components|hooks|public|pi-workspace-manager)\//.test(file));
+  // `test/` holds merge guards (see test/merge-guards/README.md); it is walked too.
+  const covered = tracked.filter((file) => /^(app|lib|scripts|components|hooks|public|pi-workspace-manager|test)\//.test(file));
   assert.deepEqual(
     tracked.filter((file) => !covered.includes(file)),
     [],

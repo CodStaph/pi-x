@@ -1,5 +1,6 @@
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { slimToolExecutionResult, slimToolResultMessage } from "./tool-result-details";
+import { isForwardedEvent } from "./pi/events";
 
 export interface AgentEventLike {
   type: string;
@@ -23,14 +24,6 @@ export type ClientAssistantMessageEvent =
 export type ClientMessageUpdateEvent = Omit<JsonMessageUpdateEvent, "assistantMessageEvent"> & {
   assistantMessageEvent: ClientAssistantMessageEvent;
 };
-
-const OMITTED_EVENT_TYPES = new Set([
-  "turn_start",
-  "turn_end",
-  // Carries the whole appended entry (an extension's custom entry, such as a
-  // codemode `store()` write, can be 1 MiB), and nothing in the browser reads it.
-  "entry_appended",
-]);
 
 /**
  * How many nested calls a codemode progress snapshot keeps. The script
@@ -145,7 +138,12 @@ export function isSystemMessageEvent(event: AgentEventLike): boolean {
 export function toClientAgentEvent(
   event: AgentEventLike,
 ): AgentEventLike | ClientMessageUpdateEvent | null {
-  if (OMITTED_EVENT_TYPES.has(event.type)) return null;
+  // What must not cross the wire lives in lib/pi/events.ts, next to the list of
+  // events the browser does handle (see the module comment there).
+  if (!isForwardedEvent(event.type)) return null;
+  // The appended entry can be ~1 MiB (an extension's codemode `store()` write),
+  // while the browser only refreshes the transcript because one happened.
+  if (event.type === "entry_appended") return { type: "entry_appended" };
   // Pi >= 0.86 appends the prompt and tool loadout to the transcript as system
   // messages, which the agent loop announces like any message. They carry the
   // whole prompt plus every tool schema and are never rendered, so drop them

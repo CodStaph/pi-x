@@ -3,6 +3,7 @@ import {
   toClientAgentEvent,
   type AgentEventLike,
 } from "./agent-event-wire";
+import { noteForwardedEventWithoutHandler } from "./pi/events";
 import { acquireSessionLivenessLease } from "./session-liveness";
 
 export interface AgentEventStreamSession {
@@ -224,7 +225,13 @@ export function createAgentEventStream(
       const forwardEvent = (event: AgentEventLike, snapshot: unknown) => {
         if (isEventIncludedInSnapshot(event, snapshot)) return;
         const clientEvent = toClientAgentEvent(event);
-        if (clientEvent) sendClientEvent(clientEvent);
+        if (!clientEvent) return;
+        // A forwarded event the browser has no case for is a silent no-op: no
+        // error, no crash, just a feature that stops updating. Report it once per
+        // type in development so an SDK bump surfaces here instead of in a bug
+        // report (lib/pi/events.ts).
+        noteForwardedEventWithoutHandler(clientEvent.type);
+        sendClientEvent(clientEvent);
       };
 
       const publishSession = async () => {

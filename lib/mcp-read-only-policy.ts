@@ -1,7 +1,7 @@
 import type { InlineExtension, ToolInfo } from "@earendil-works/pi-coding-agent";
 import { MCP_EXTENSION_PATH } from "./mcp-command";
 import { readSessionToolSelection } from "./session-tool-selection";
-import type { SessionEntry } from "./types";
+import { toSessionEntries } from "./pi/entries";
 
 // A Read-only session pins coding tools that cannot change anything, but MCP
 // tools stay callable beside them, directly or from a codemode script. While
@@ -43,7 +43,7 @@ export function createReadOnlyMcpPolicyExtension(): InlineExtension {
         const tool = pi.getAllTools().find((candidate) => candidate.name === event.toolName);
         if (!tool || !isMcpTool(tool) || tool.annotations?.readOnlyHint === true) return undefined;
         // Read last: most calls are not MCP calls, and the selection scan walks the session.
-        const selection = readSessionToolSelection(ctx.sessionManager.getEntries() as unknown as SessionEntry[]);
+        const selection = readSessionToolSelection(toSessionEntries(ctx.sessionManager.getEntries()));
         if (!isReadOnlySelection(selection)) return undefined;
         return { block: true, reason: readOnlyMcpBlockReason(event.toolName) };
       });

@@ -4,6 +4,7 @@ import test from "node:test";
 
 const routeSource = readFileSync(new URL("./running/events/route.ts", import.meta.url), "utf8");
 const rpcManagerSource = readFileSync(new URL("../../../lib/rpc-manager.ts", import.meta.url), "utf8");
+const capabilitiesSource = readFileSync(new URL("../../../lib/pi/capabilities.ts", import.meta.url), "utf8");
 
 test("running SSE frames carry the session-list version for cross-window refresh", () => {
   assert.match(routeSource, /import \{ getSessionListVersion \} from "@\/lib\/session-reader"/);
@@ -34,8 +35,11 @@ test("session_info_changed invalidates the list cache and broadcasts a version f
 test("isRunning consults the SDK's isIdle so retry backoff is not mistaken for idle", () => {
   const idx = rpcManagerSource.indexOf("isRunning(): boolean");
   const block = rpcManagerSource.slice(idx, rpcManagerSource.indexOf("evictIfDiskAhead"));
-  assert.match(block, /this\.inner\.isIdle/);
-  assert.match(block, /sdkIdle === false/);
+  // Reading isIdle is an SDK-capability decision, so it lives in
+  // lib/pi/capabilities.ts (pinned by its own test); the wrapper only asks
+  // whether this build reports the flag at all.
+  assert.match(block, /sdkReportsBusy\(this\.inner, this\.capabilities\)/);
+  assert.match(capabilitiesSource, /capabilities\.idleFlag && session\.isIdle === false/);
 });
 
 test("idle-timer resets cover retry backoff events", () => {

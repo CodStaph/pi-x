@@ -9,6 +9,7 @@ const phaseLabelSource = await jitiSource(new URL("../lib/chat-phase-label.ts", 
 const chatInputSource = await jitiSource(new URL("../components/ChatInput.tsx", import.meta.url));
 const messageViewSource = await jitiSource(new URL("../components/MessageView.tsx", import.meta.url));
 const appShellSource = await jitiSource(new URL("../components/AppShell.tsx", import.meta.url));
+const sessionCommandsSource = await jitiSource(new URL("../lib/pi/session-commands.ts", import.meta.url));
 
 test("keeps the session event stream open through the idle grace window", () => {
   const finishSource = source.slice(
@@ -85,7 +86,8 @@ test("opening System or Tools lazily starts a dormant session without sending a 
 
   assert.match(loadSystemInfoSource, /sessionIdRef\.current \?\? await ensureNewSession\(\)/);
   assert.doesNotMatch(loadSystemInfoSource, /promoteNewSession\(\)/);
-  assert.match(loadSystemInfoSource, /sendAgentCommand<AgentStateResponse>\(sid, \{ type: "get_state" \}\)/);
+  // The result type comes from the command contract, so the call names no type argument.
+  assert.match(loadSystemInfoSource, /sendAgentCommand\(sid, \{ type: "get_state" \}\)/);
   assert.match(loadSystemInfoSource, /loadTools\(sid\)/);
   assert.doesNotMatch(loadSystemInfoSource, /type: "prompt"/);
   assert.match(loadSystemInfoSource, /setSystemPrompt\(state\.systemPrompt \?\? ""\)/);
@@ -251,7 +253,9 @@ test("an empty persisted session displays the model it will use on first send", 
 });
 
 test("the selector prefers the live wrapper model over persisted response metadata", () => {
-  assert.match(source, /model\?: \{ provider: string; id: string \}/);
+  // The get_state shape lives in the command contract now; the hook imports it.
+  assert.match(sessionCommandsSource, /model\?: \{ provider: string; id: string \}/);
+  assert.match(source, /AgentStateResponse,/);
   assert.match(source, /const currentModel = currentModelOverride \?\? liveModel \?\? data\?\.context\.model \?\? pendingModel \?\? null/);
   assert.match(source, /syncLiveModel\(liveState\)/);
   assert.match(source, /syncLiveModel\(state\);[\s\S]*?const busy = data\.running/);
@@ -814,7 +818,7 @@ test("auto-compact slash command toggles session auto-compaction", () => {
     source.indexOf('case "reload"'),
   );
   assert.ok(commandSource.length > 0, "auto-compact case not found before reload case");
-  assert.match(commandSource, /sendAgentCommand<AgentStateResponse>\(sid, \{\s*type: "get_state"\s*\}\)/);
+  assert.match(commandSource, /sendAgentCommand\(sid, \{\s*type: "get_state"\s*\}\)/);
   assert.match(commandSource, /!\(liveState\?\.autoCompactionEnabled \?\? true\)/);
   assert.match(commandSource, /sendAgentCommand\(sid, \{\s*type: "set_auto_compaction",\s*enabled: nextEnabled,\s*\}\)/);
   // The result lands in `automation`, the same state the composer gear reads;

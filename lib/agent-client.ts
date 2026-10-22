@@ -6,6 +6,14 @@
 //
 // Call sites previously repeated the same 5-line fetch block 13× in
 // hooks/useAgentSession.ts. This helper collapses that down to one line.
+//
+// The command and its result are both keyed by `lib/pi/session-commands.ts`:
+// the type argument is the command's `type`, so a misspelled command name or a
+// field the contract does not describe fails at compile time instead of in the
+// browser console.
+
+import type { CommandOf, CommandResult, CommandType } from "@/lib/pi/session-commands";
+import { AGENT_ERROR_CODES } from "./agent-error-codes";
 
 export class AgentCommandError extends Error {
   constructor(
@@ -21,14 +29,14 @@ export class AgentCommandError extends Error {
 
 export function isPromptRejectedError(error: unknown): error is AgentCommandError {
   return error instanceof AgentCommandError
-    && error.code === "prompt_rejected"
+    && error.code === AGENT_ERROR_CODES.promptRejected
     && error.accepted === false;
 }
 
-export async function sendAgentCommand<T = unknown>(
+export async function sendAgentCommand<T extends CommandType>(
   sessionId: string,
-  command: Record<string, unknown>,
-): Promise<T> {
+  command: CommandOf<T>,
+): Promise<CommandResult<T>> {
   const res = await fetch(`/api/agent/${encodeURIComponent(sessionId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -36,7 +44,7 @@ export async function sendAgentCommand<T = unknown>(
   });
   const body = (await res.json().catch(() => ({}))) as {
     success?: boolean;
-    data?: T;
+    data?: CommandResult<T>;
     error?: string;
     code?: string;
     accepted?: boolean;
@@ -49,5 +57,5 @@ export async function sendAgentCommand<T = unknown>(
       body.accepted,
     );
   }
-  return body.data as T;
+  return body.data as CommandResult<T>;
 }

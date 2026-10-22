@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "upstreamBaseline": "main@6fcd7d4 (v0.10.0)",
+  "upstreamBaselineCommit": "6fcd7d4",
   "note": "Single source of truth for the pi-web merge boundary. `driftedUpstreamFiles` lists files agegr/pi-web owns that this fork has also edited \u2014 every one is a potential merge conflict, and a potential SILENT semantic conflict when git merges cleanly but the two sides changed different things. The automated sync (.github/workflows/component-updates.yml) intersects each incoming upstream release with this map to decide whether it may push to main unattended. Human-facing rationale lives in docs/ownership-boundaries.md.",
   "ignored": [
     "package-lock.json",
@@ -37,6 +38,13 @@
       "structuralDrift": 1553,
       "disposition": "accepted"
     },
+    "components/SettingsPanel.tsx": {
+      "risk": "high",
+      "drift": 816,
+      "reason": "Desktop i18n, the General-tab regroup (Version & Updates, appearance, chat, artifacts switch) and the per-platform dialog layout are fork work. test/merge-guards/fork-extractions.test.mjs guards it; a clean merge can still drop one of the fork's settings rows.",
+      "structuralDrift": 665,
+      "disposition": "accepted"
+    },
     "components/FileViewer.tsx": {
       "risk": "high",
       "drift": 470,
@@ -45,10 +53,10 @@
       "disposition": "accepted"
     },
     "components/FileExplorer.tsx": {
-      "risk": "low",
-      "drift": 19,
-      "reason": "Took upstream FileExplorer wholesale in the v0.8.11 merge (its file-search implementation won); only the selectedFilePath prop remains fork-side. Kept deliberately.",
-      "structuralDrift": 19,
+      "risk": "medium",
+      "drift": 62,
+      "reason": "Took upstream FileExplorer wholesale in the v0.8.11 merge (its file-search implementation won); the fork's own selection, drag/drop and icon wiring has since grown past the cosmetic line (62 lines, 35 structural).",
+      "structuralDrift": 35,
       "disposition": "accepted"
     },
     "components/TabBar.tsx": {
@@ -112,11 +120,56 @@
       "reason": "Adds ignores for the desktop build output directories.",
       "disposition": "accepted"
     },
+    "app/api/files/[...path]/route.ts": {
+      "risk": "high",
+      "drift": 327,
+      "reason": "File serving, the local HTML preview CSP and sandbox rule, the serve MIME table and the desktop import/save paths are fork work on upstream's file route. The security-relevant halves are pinned by app/api/files/stream-route.test.mjs.",
+      "structuralDrift": 327,
+      "sentinels": "elsewhere",
+      "sentinelReason": "app/api/files/stream-route.test.mjs (preview CSP/sandbox, SERVE_EXT_TO_MIME) plus the list/watch/write/linked-directory route tests",
+      "disposition": "accepted"
+    },
+    "hooks/useAgentSession.ts": {
+      "risk": "high",
+      "drift": 686,
+      "reason": "The client session hook is fork work end to end: SSE reconnect and reconciliation, the monotonic request-id guards, draft handover, model/thinking sync, scroll restore. Its sentinels live with the hook rather than in test/merge-guards.",
+      "structuralDrift": 686,
+      "sentinels": "elsewhere",
+      "sentinelReason": "hooks/useAgentSession.test.mjs (60+ source assertions) and components/useAgentSession-session-isolation.test.mjs",
+      "disposition": "accepted"
+    },
+    "lib/i18n/messages/en.ts": {
+      "risk": "high",
+      "drift": 551,
+      "reason": "Desktop i18n is fork work on upstream's locale packages: every fork feature adds keys here. The invariant a merge can break is the key set, which lib/i18n/registry.test.mjs pins across locales.",
+      "structuralDrift": 551,
+      "sentinels": "elsewhere",
+      "sentinelReason": "lib/i18n/registry.test.mjs compares every locale's key set and placeholders against English",
+      "disposition": "accepted"
+    },
+    "lib/i18n/messages/zh-CN.ts": {
+      "risk": "high",
+      "drift": 555,
+      "reason": "Desktop i18n is fork work on upstream's locale packages: every fork feature adds keys here. The invariant a merge can break is the key set, which lib/i18n/registry.test.mjs pins across locales.",
+      "structuralDrift": 555,
+      "sentinels": "elsewhere",
+      "sentinelReason": "lib/i18n/registry.test.mjs compares every locale's key set and placeholders against English",
+      "disposition": "accepted"
+    },
+    "lib/i18n/messages/zh-TW.ts": {
+      "risk": "high",
+      "drift": 545,
+      "reason": "Desktop i18n is fork work on upstream's locale packages: every fork feature adds keys here. The invariant a merge can break is the key set, which lib/i18n/registry.test.mjs pins across locales.",
+      "structuralDrift": 545,
+      "sentinels": "elsewhere",
+      "sentinelReason": "lib/i18n/registry.test.mjs compares every locale's key set and placeholders against English",
+      "disposition": "accepted"
+    },
     "lib/rpc-manager.ts": {
       "risk": "high",
-      "drift": 109,
-      "reason": "Small fork edit in a file upstream changes often; watch it despite the low drift count.",
-      "structuralDrift": 595,
+      "drift": 652,
+      "reason": "The whole session runtime (wrapper, command switch, event projection, tool/model/MCP/subagent wiring) is fork work on an upstream file. Stage C moved the registry, start locks and running-set broadcast out to lib/session/registry.ts, which is fork-owned and therefore not a merge surface; the wrapper and the command switch stay here until they can move in one window (see docs/architecture-improvement-plan.zh-CN.md, stage C).",
+      "structuralDrift": 652,
       "disposition": "accepted"
     },
     "components/BranchNavigator.tsx": {
@@ -204,7 +257,7 @@
     "components/UpdateReminder.tsx",
     "components/AppUpdatesSection.tsx",
     "components/path-ui.tsx",
-    "components/fork-extractions.test.mjs",
+    "test/merge-guards/fork-extractions.test.mjs",
     "lib/branding.ts",
     "lib/branding.test.mjs",
     "lib/app-update-types.ts",
@@ -232,7 +285,7 @@
     "2026-09-19 \u2014 merged upstream v0.8.11 \u2192 v0.9.1 \u2192 main@974c8bb in four staged merges (88285a4, 7dbd35f, b11eabe, 0e36743). Config modals (Models/Skills/Plugins) now track upstream exactly and left the manifest. Numbers refreshed against main@974c8bb.",
     "2026-09-25 \u2014 merged upstream 1eb5e66..96966e5 (v0.9.2+v0.9.3, pi 0.87.1) in one merge (15bee2b). Upstream owns the exact-system-prompt mechanism (lib/exact-system-prompt.ts) and the session scanner; fork transformContext projection deleted. Declined again: resizable sidebar panes, DirectoryPicker, SessionSearch, sidebar FileExplorer, ChatMinimap. Numbers refreshed against the 96966e5 baseline.",
     "2026-09-26 \u2014 settings: the standalone AppSettings modal and its \"Desktop\" tab were folded into the General tab, which already rendered the same language and theme pickers. The product blurb and Version & Updates now sit at the top of General (components/AppUpdatesSection.tsx); the desktop-only window/tray switches live in components/desktop/DesktopAppSection.tsx (renders nothing in a browser), and the custom-stylesheet and diff-display controls joined General's appearance/chat sections. Seven appSettings.* locale keys went dead with the duplicate pickers and were dropped from all three locales. components/AppSettings.tsx deleted.",
-    "2026-09-26 \u2014 components/ChatWindow.tsx: the empty-session branding header upstream renders above the composer (app icon + product name + version badge) is removed entirely rather than rebranded; the row now carries only NewSessionUpdateLink, which self-hides, so the row keeps no margin of its own. This is a deletion, not a move, so it needed a new sentinel direction: FORK_FEATURES entries gained `forbiddenMarkers` in components/fork-extractions.test.mjs, pinning apple-touch-icon and PRODUCT_NAME out of ChatWindow.tsx. A merge that re-adopts upstream's empty state now fails that test instead of silently restoring the branding.",
+    "2026-09-26 \u2014 components/ChatWindow.tsx: the empty-session branding header upstream renders above the composer (app icon + product name + version badge) is removed entirely rather than rebranded; the row now carries only NewSessionUpdateLink, which self-hides, so the row keeps no margin of its own. This is a deletion, not a move, so it needed a new sentinel direction: FORK_FEATURES entries gained `forbiddenMarkers` in test/merge-guards/fork-extractions.test.mjs, pinning apple-touch-icon and PRODUCT_NAME out of ChatWindow.tsx. A merge that re-adopts upstream's empty state now fails that test instead of silently restoring the branding.",
     "2026-09-26 \u2014 app/globals.css and app/settings.css restored to byte-identical with upstream 96966e5: ~470 + ~220 fork lines that had accumulated in them despite the rule moved to a 'fork base layer' at the top of app/native-theme.css (cascade verified unchanged by a computed-style comparison). scripts/upstream-css-baseline.test.mjs now pins both files to hashes in scripts/upstream-css-baseline.json; the sync workflow refreshes them after a merge with `node scripts/upstream-css-baseline.mjs update`, which refuses when either file differs from upstream. Design intent recorded in docs/native-theme.md.",
     "2026-10-04 \u2014 baseline moved 96966e5 -> 6fcd7d4. Segment G (c5a70eb) was a single-parent commit, so git never recorded 6fcd7d4 as merged: merge-base stayed at 96966e5, `npm run drift` reported structural 18077 instead of 9959, and a merge of the upstream tag would have replayed the whole range (39 conflicts in a dry run). An `-s ours` merge now records the ancestry without touching the tree. Risk levels re-measured: lib/file-access.ts low->medium, lib/directory-browser.ts and components/FileExplorer.tsx medium->low; components/FileIcons.tsx no longer differs from upstream and its entry is removed."
   ]

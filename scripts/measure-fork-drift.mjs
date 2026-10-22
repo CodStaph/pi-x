@@ -64,7 +64,9 @@ function resolveBaseline(explicit) {
 let cachedManifest;
 function baselineFromManifest() {
   cachedManifest ??= manifest;
-  return cachedManifest.upstreamBaseline;
+  // `upstreamBaseline` is the human-readable description ("main@6fcd7d4 (v0.10.0)"),
+  // which `git diff` cannot resolve; the commit beside it is the revision to use.
+  return cachedManifest.upstreamBaselineCommit ?? cachedManifest.upstreamBaseline;
 }
 
 const manifest = await readForkOwnership();
@@ -135,5 +137,8 @@ console.log(
 
 if (drifted > 0) {
   console.error(`\n${drifted} file(s) disagree with scripts/fork-ownership.json — update it.`);
+  // A recorded risk that no longer matches the measured one means the manifest
+  // (and the auto-push policy built on it) is stale: fail so CI catches it.
+  process.exitCode = 1;
   process.exitCode = 1;
 }

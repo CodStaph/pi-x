@@ -4,7 +4,9 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const cwd = fileURLToPath(new URL("../", import.meta.url));
-const roots = ["app", "lib", "scripts", "components", "hooks", "public", "pi-workspace-manager"];
+// `test/` holds merge guards: assertions about the repository (source markers,
+// manifest/sentinel agreement), not about runtime behaviour.
+const roots = ["app", "lib", "scripts", "components", "hooks", "public", "pi-workspace-manager", "test"];
 function collect(directory) {
   return readdirSync(path.join(cwd, directory), { withFileTypes: true }).flatMap((entry) => {
     const relative = path.join(directory, entry.name);

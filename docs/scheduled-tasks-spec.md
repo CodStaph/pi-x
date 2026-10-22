@@ -204,7 +204,7 @@ instrumentation.ts  服务启动时拉起 scheduler
 
 - 文案键:`sidebar.scheduled`、`scheduled.*`,同步补 `en`、`zh-CN`、`zh-TW`。
 - 新代码尽量放在新文件:`lib/scheduled-tasks/`、`components/scheduled/`、`app/api/scheduled-tasks/`,减少与上游合并时的冲突面。
-- 合并后依赖的 fork 接线(侧边栏入口行、`AppShell` 视图分支、`session-reader` 的 relation 附加)加入 `components/fork-extractions.test.mjs` 的哨兵,并在 `scripts/fork-ownership.json` 登记风险等级。
+- 合并后依赖的 fork 接线(侧边栏入口行、`AppShell` 视图分支、`session-reader` 的 relation 附加)加入 `test/merge-guards/fork-extractions.test.mjs` 的哨兵,并在 `scripts/fork-ownership.json` 登记风险等级。
 - 文档:新增 `docs/adr/0007-scheduled-tasks.md`(记录 D1–D6)与 `docs/agents/scheduled-tasks.md`(主题说明),并在 `AGENTS.md` 的主题索引里加一行。
 
 ## 6. 事件

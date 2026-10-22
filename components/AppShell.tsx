@@ -1364,7 +1364,7 @@ export function AppShell() {
     sourceSessionId: string,
     sourceEntryId: string,
   ) => {
-    const result = await sendAgentCommand<{ newSessionId?: string }>(sourceSessionId, {
+    const result = await sendAgentCommand(sourceSessionId, {
       type: "fork_branch",
       entryId: sourceEntryId,
     });

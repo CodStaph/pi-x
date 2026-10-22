@@ -27,7 +27,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
+const rootDir = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const read = (file) => readFile(join(rootDir, file), "utf8");
 
 /** Source with import statements removed, so a re-import never reads as a definition. */
@@ -104,6 +104,22 @@ const FORK_FEATURES = [
     // are the point of this entry.
     markers: ["isEmptyNew"],
     forbiddenMarkers: ["apple-touch-icon", "PRODUCT_NAME", "NewSessionUpdateLink"],
+  },
+  {
+    name: "ChatInput composer card and default-model star",
+    file: "components/ChatInput.tsx",
+    // The composer card, its quiet send button and the `/` `@` `#` trigger hint are
+    // the fork's design (upstream keeps the older toolbar row); the default-model
+    // star is fork-only. handleSend's single-send semantics are pinned separately
+    // in components/ChatInput.test.mjs. scripts/check-ownership-sentinels.mjs fails
+    // if this file loses the entry while still being high risk.
+    markers: [
+      "composer-send-button",
+      "composer-attach-button",
+      "composer-trigger-hint",
+      "data-state={compact",
+      "onSetDefaultModel",
+    ],
   },
   {
     name: "sidebar header controls",

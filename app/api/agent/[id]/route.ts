@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
+import { AGENT_ERROR_CODES } from "@/lib/agent-error-codes";
 import { resolveSessionPath } from "@/lib/session-reader";
+import { parseSessionCommand } from "@/lib/pi/session-commands";
 import { startRpcSession, getRpcSession, setRpcSessionTools } from "@/lib/rpc-manager";
 
 // POST /api/agent/[id] - Send a command to an existing session
@@ -12,20 +14,23 @@ export async function POST(
   let promptAccepted = false;
 
   try {
-    const body = await req.json() as { type: string; [key: string]: unknown };
-    commandType = typeof body.type === "string" ? body.type : undefined;
-    const requestedToolNames = body.toolNames;
-    if (
-      requestedToolNames !== undefined
-      && (!Array.isArray(requestedToolNames) || requestedToolNames.some((name) => typeof name !== "string"))
-    ) {
-      throw new Error("toolNames must be an array of strings");
+    // The contract in lib/pi/session-commands.ts decides what may be dispatched
+    // at all. Only shape problems stop here; an empty name or an unknown model
+    // is still the wrapper's error to raise.
+    const parsed = parseSessionCommand(await req.json());
+    if (!parsed.ok) {
+      return NextResponse.json(
+        { error: parsed.error, code: AGENT_ERROR_CODES.invalidCommand },
+        { status: 400 },
+      );
     }
-    const toolNames = requestedToolNames as string[] | undefined;
+    const command = parsed.command;
+    commandType = command.type;
+    const { toolNames } = command;
 
     // Fast path: already-running session
     const existing = getRpcSession(id);
-    if (body.type === "set_tools") {
+    if (command.type === "set_tools") {
       const filePath = existing?.sessionFile || await resolveSessionPath(id) || undefined;
       if (!existing?.isAlive() && !filePath) {
         return NextResponse.json({ error: "Session not found" }, { status: 404 });
@@ -37,8 +42,8 @@ export async function POST(
       });
     }
     if (existing?.isAlive()) {
-      const result = await existing.send(body);
-      promptAccepted = body.type === "prompt";
+      const result = await existing.send(command);
+      promptAccepted = command.type === "prompt";
       return NextResponse.json({ success: true, data: result });
     }
 
@@ -46,8 +51,8 @@ export async function POST(
     if (!filePath) {
       return NextResponse.json({
         error: "Session not found",
-        ...(body.type === "prompt"
-          ? { code: "prompt_rejected", accepted: false }
+        ...(command.type === "prompt"
+          ? { code: AGENT_ERROR_CODES.promptRejected, accepted: false }
           : {}),
       }, { status: 404 });
     }
@@ -55,15 +60,15 @@ export async function POST(
     const { session } = await startRpcSession(id, filePath, undefined, {
       ...(toolNames !== undefined ? { toolNames } : {}),
     });
-    const result = await session.send(body);
-    promptAccepted = body.type === "prompt";
+    const result = await session.send(command);
+    promptAccepted = command.type === "prompt";
 
     return NextResponse.json({ success: true, data: result });
   } catch (error) {
     return NextResponse.json({
       error: error instanceof Error ? error.message : String(error),
       ...(commandType === "prompt" && !promptAccepted
-        ? { code: "prompt_rejected", accepted: false }
+        ? { code: AGENT_ERROR_CODES.promptRejected, accepted: false }
         : {}),
     }, { status: 500 });
   }

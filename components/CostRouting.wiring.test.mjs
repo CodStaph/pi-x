@@ -10,7 +10,7 @@ const rpcManager = await read("../lib/rpc-manager.ts");
 
 test("the wrapper reports where a virtual model routed and the cache-warming state", () => {
   assert.match(rpcManager, /routedModel: this\.getRoutedModel\(\),\s*cacheWarming: this\.getCacheWarming\(\),/);
-  assert.match(rpcManager, /costBreakdown: getUsageCostBreakdown\(this\.inner\.sessionManager\.getEntries\(\)/);
+  assert.match(rpcManager, /costBreakdown: getUsageCostBreakdown\(toSessionEntries\(this\.inner\.sessionManager\.getEntries\(\)\)\)/);
   // Every state sync carries them, so the composer and the panel follow each run.
   assert.match(hook, /setRoutedModel\(state\?\.routedModel \?\? null\);\s*setCacheWarming\(state\?\.cacheWarming \?\? null\);/);
 });

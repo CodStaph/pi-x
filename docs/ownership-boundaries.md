@@ -104,7 +104,7 @@ files. That rate is stable, not temporary — see the dispositions below.
 
 ### Sentinels
 
-`components/fork-extractions.test.mjs` turns that silent failure into a loud one. It
+`test/merge-guards/fork-extractions.test.mjs` turns that silent failure into a loud one. It
 covers both directions a clean-but-wrong merge can go:
 
 - **Resurrection** — code the fork moved elsewhere reappears at its origin, e.g.
@@ -231,7 +231,7 @@ Adding to a shared file is fine — just make the decision explicit:
 2. Give the entry a `disposition`. `reduce` means you intend to remove it; if you cannot
    say how, it is `accepted` and you are choosing to pay for it.
 3. If you moved code out of a shared file, add a sentinel in
-   `components/fork-extractions.test.mjs` — that is the failure mode nothing else catches.
+   `test/merge-guards/fork-extractions.test.mjs` — that is the failure mode nothing else catches.
 4. Append a dated line to `decisionLog` so the next person does not re-litigate it.
 
 ## Commands

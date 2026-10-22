@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
+import { AGENT_ERROR_CODES } from "@/lib/agent-error-codes";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
 import { allowFileRoot } from "@/lib/file-access";
 import { invalidateSessionListCache } from "@/lib/session-reader";
 import { startRpcSession } from "@/lib/rpc-manager";
+import { parseSessionCommand } from "@/lib/pi/session-commands";
 
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
@@ -31,7 +33,7 @@ export async function POST(req: Request) {
       return NextResponse.json({
         error: "cwd is required",
         ...(commandType === "prompt"
-          ? { code: "prompt_rejected", accepted: false }
+          ? { code: AGENT_ERROR_CODES.promptRejected, accepted: false }
           : {}),
       }, { status: 400 });
     }
@@ -39,7 +41,7 @@ export async function POST(req: Request) {
       return NextResponse.json({
         error: `Directory does not exist: ${cwd}`,
         ...(commandType === "prompt"
-          ? { code: "prompt_rejected", accepted: false }
+          ? { code: AGENT_ERROR_CODES.promptRejected, accepted: false }
           : {}),
       }, { status: 400 });
     }
@@ -50,6 +52,16 @@ export async function POST(req: Request) {
       throw new Error("provider and modelId must be provided together");
     }
     const explicitThinkingLevel = parseThinkingLevel(thinkingLevel);
+
+    // `type:"ensure_session"` only creates the runtime; every other body is a real
+    // session command and must satisfy the contract before a session is built.
+    const parsedCommand = promptCommand.type === "ensure_session" ? null : parseSessionCommand(promptCommand);
+    if (parsedCommand && !parsedCommand.ok) {
+      return NextResponse.json(
+        { error: parsedCommand.error, code: AGENT_ERROR_CODES.invalidCommand },
+        { status: 400 },
+      );
+    }
 
     // Must be unique per request: startRpcSession coalesces concurrent callers
     // that share a key onto one session. Date.now() (ms resolution) collides for
@@ -84,8 +96,10 @@ export async function POST(req: Request) {
       });
     }
 
-    const result = await session.send(promptCommand);
-    promptAccepted = promptCommand.type === "prompt";
+    const sessionCommand = parsedCommand?.ok ? parsedCommand.command : null;
+    if (!sessionCommand) throw new Error(`Unsupported command: ${String(promptCommand.type)}`);
+    const result = await session.send(sessionCommand);
+    promptAccepted = sessionCommand.type === "prompt";
 
     return NextResponse.json({
       success: true,
@@ -100,7 +114,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       error: error instanceof Error ? error.message : String(error),
       ...(commandType === "prompt" && !promptAccepted
-        ? { code: "prompt_rejected", accepted: false }
+        ? { code: AGENT_ERROR_CODES.promptRejected, accepted: false }
         : {}),
     }, { status: 500 });
   }

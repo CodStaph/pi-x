@@ -135,8 +135,10 @@ test("untouched and ignored files never trigger review", () => {
 
 test("the real v0.8.0 -> v0.8.1 changeset would have demanded review", () => {
   // Regression anchor: this is what upstream actually shipped in one patch
-  // release. Eight of these files carry fork drift, so the previous
+  // release. Nine of these files carry fork drift, so the previous
   // push-straight-to-signed-release path was applying them unattended.
+  // `hooks/useAgentSession.ts` only became visible here after the manifest was
+  // completed (stage E / P0); before that it was a high-drift file nothing blocked.
   // lib/directory-browser.ts is in both lists for a reason — v0.8.1 introduced
   // it, and its homedir() usage is what broke the Windows build.
   const result = classifyIncomingChanges(
@@ -160,7 +162,7 @@ test("the real v0.8.0 -> v0.8.1 changeset would have demanded review", () => {
 
   assert.equal(result.reviewRequired, true);
   assert.equal(result.highestRisk, "high");
-  assert.equal(result.overlaps.length, 8);
+  assert.equal(result.overlaps.length, 9);
   assert.equal(result.overlaps[0].risk, "high", "the riskiest overlap must be reported first");
   assert.match(formatReport(result), /silent semantic conflicts/);
 });

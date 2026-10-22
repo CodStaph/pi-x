@@ -2,8 +2,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, SettingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
-import { existsSync, realpathSync, writeFileSync } from "fs";
-import { resolve } from "path";
+import { existsSync, writeFileSync } from "fs";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
 import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
@@ -12,12 +11,58 @@ import {
   createProjectCommandBashOperations,
   preferUserBashExtension,
 } from "./project-command-env";
-import { cacheSessionPath, getLatestModelChange, getLatestResponseModel, getSessionListVersion, invalidateSessionListCache, readLatestSessionEntryId, resolveSessionPath } from "./session-reader";
+import { cacheSessionPath, getLatestModelChange, getLatestResponseModel, invalidateSessionListCache, readLatestSessionEntryId, resolveSessionPath } from "./session-reader";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { notifySessionComplete } from "./web-push";
 import { hasActiveSessionLivenessProvider } from "./session-liveness";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { PRODUCT_NAME } from "./branding";
+import {
+  COMMAND_META,
+  commandTypesWith,
+  type CommandType,
+  type SessionCommand,
+} from "./pi/session-commands";
+import { toSessionEntries } from "./pi/entries";
+import {
+  IDLE_PHASE,
+  compareBusy,
+  phaseFromFlags,
+  reducePhase,
+  signalFromAgentEvent,
+  type SessionPhase,
+  type SessionSignal,
+} from "./session/state";
+import {
+  getLocks,
+  getRegistry,
+  getRpcSession,
+  notifyRunningChange,
+  registerRpcWrapper,
+  trackStartingSession,
+} from "./session/registry";
+// Routes, hooks and tests import the registry helpers from this module; stage C
+// moved the implementation to ./session/registry without changing that surface.
+export {
+  destroyRpcSessionsForCwd,
+  getCompletionNotificationSuppressedRpcSessionIds,
+  getRpcSession,
+  getRunningRpcSessionIds,
+  hasBusyRpcSessionForCwd,
+  notifyRunningChange,
+  subscribeRunningSessions,
+} from "./session/registry";
+import {
+  abortBranchSummary,
+  abortRetry,
+  detectSessionCapabilities,
+  hasBindExtensions,
+  replayStateSystemPrompt,
+  sdkReportsBusy,
+  setFollowUpMode,
+  setSteeringMode,
+  type SessionCapabilities,
+} from "./pi/capabilities";
 import type { AgentSessionLike, ExtensionUiContextLike, NavigateTreeOptions, ToolInfo } from "./pi-types";
 import type {
   CacheWarmingInfo,
@@ -25,7 +70,6 @@ import type {
   ExtensionUiResponse,
   ExtensionWidgetItem,
   RoutedModelInfo,
-  SessionEntry,
   SessionInfo,
   SessionMessageEntry,
 } from "./types";
@@ -203,20 +247,12 @@ export function resolveSessionShutdownDeadlineMs(
 
 const SESSION_SHUTDOWN_DEADLINE_MS = resolveSessionShutdownDeadlineMs();
 
-const SESSION_REPLACEMENT_COMMAND_TYPES = new Set(["fork", "clone"]);
+const SESSION_REPLACEMENT_COMMAND_TYPES = commandTypesWith("replacesSession");
 // pi writes a session file at the first user message, so a session with no
 // conversation on disk has nothing to copy from yet.
 const UNSAVED_SESSION_FORK_ERROR =
   "This session has not been saved yet. Send a message before forking it.";
-const COMMANDS_ALLOWED_DURING_SESSION_REPLACEMENT = new Set([
-  "get_state",
-  "get_session_stats",
-  "get_last_assistant_text",
-  "get_tools",
-  "get_commands",
-  "extension_ui_response",
-  "extension_ui_input",
-]);
+const COMMANDS_ALLOWED_DURING_SESSION_REPLACEMENT = commandTypesWith("allowedDuringReplacement");
 
 export interface RpcSessionStartOptions {
   toolNames?: string[];
@@ -343,6 +379,15 @@ export class AgentSessionWrapper {
   // Set when shutdown() starts. The SDK session stays usable until destroy(),
   // but lookups must treat the wrapper as gone from this point on.
   private closing = false;
+  /** What this SDK build exposes; adapted in lib/pi/capabilities.ts, nowhere else. */
+  private readonly capabilities: SessionCapabilities;
+  /**
+   * Shadow activity phase (lib/session/state.ts, stage B). Nothing reads it for
+   * behaviour yet: `isRunning()` still answers from the flags, and
+   * `advancePhase()` compares the two so a missing transition is visible.
+   */
+  private phase: SessionPhase = IDLE_PHASE;
+  private phaseMismatches = { risky: 0, conservative: 0 };
 
   constructor(
     public readonly inner: AgentSessionLike,
@@ -353,6 +398,7 @@ export class AgentSessionWrapper {
     this.onAgentRunComplete = options.onAgentRunComplete;
     this.suppressCompletionNotifications = options.suppressCompletionNotifications ?? false;
     this.mcpHost = options.mcpHost;
+    this.capabilities = detectSessionCapabilities(inner);
   }
 
   get sessionId(): string {
@@ -388,14 +434,14 @@ export class AgentSessionWrapper {
     // `isIdle` (pi ≥ 0.86) spans the whole post-run pipeline — auto-retry
     // backoff, branch summaries, queued continuations — which the four flags
     // below cannot see (an agent_end with willRetry=false on the flags looks
-    // idle until the next agent_start). Older SDKs fall back to the flags.
-    const sdkIdle = this.inner.isIdle;
+    // idle until the next agent_start). The capability decides whether the SDK
+    // reports it at all; builds without it fall back to the flags.
     return this._alive && (
       this.pendingPromptCount > 0
       || this.inner.isStreaming
       || this.inner.isCompacting
       || this.inner.isBashRunning
-      || sdkIdle === false
+      || sdkReportsBusy(this.inner, this.capabilities)
     );
   }
 
@@ -429,6 +475,11 @@ export class AgentSessionWrapper {
 
   start(): void {
     this.unsubscribe = this.inner.subscribe((event: AgentEvent) => {
+      // Shadow activity machine first, so its phase matches the event that just
+      // arrived (the flags below are read live and may move again by the time a
+      // listener runs).
+      const phaseSignal = signalFromAgentEvent(event);
+      if (phaseSignal) this.advancePhase(phaseSignal);
       if (event.type === "agent_start") {
         this.agentRunNeedsCompletion = true;
         // Cross-window liveness: idle → running must reach other windows'
@@ -467,9 +518,55 @@ export class AgentSessionWrapper {
       if (event.type === "agent_settled") this.notifyAgentRunCompleteIfIdle();
     });
     this.resetIdleTimer();
-    // A reopened wrapper may already be running (restored mid-run); make
-    // connected sidebars reconcile instead of waiting for the next event.
+    // A reopened wrapper may already be running (restored mid-run): seed the
+    // shadow phase from the flags so its first signal is not compared with a
+    // stale `idle`, then make connected sidebars reconcile.
+    if (this.isRunning()) this.phase = this.phaseFromCurrentFlags();
     notifyRunningChange();
+  }
+
+  /** The shadow activity phase; diagnostics and the stage-B tests only. */
+  getActivityPhase(): SessionPhase {
+    return this.phase;
+  }
+
+  /** How often the shadow machine disagreed with the flags, by direction. */
+  getPhaseMismatches(): { risky: number; conservative: number } {
+    return { ...this.phaseMismatches };
+  }
+
+  private phaseFromCurrentFlags(): SessionPhase {
+    return phaseFromFlags({
+      streaming: this.inner.isStreaming,
+      compacting: this.inner.isCompacting,
+      bashRunning: this.inner.isBashRunning,
+      sdkBusy: sdkReportsBusy(this.inner, this.capabilities),
+      pendingPrompts: this.pendingPromptCount,
+    });
+  }
+
+  /**
+   * Fold one activity signal into the shadow machine and compare it with the
+   * flag-based answer.
+   *
+   * Only "flags busy, phase idle" is a warning: that is the direction that
+   * evicts or shuts a wrapper mid-run. The conservative direction is counted,
+   * because `agent_end` deliberately keeps the phase busy until the SDK settles
+   * and the flags may already read idle.
+   */
+  private advancePhase(signal: SessionSignal): void {
+    if (!this._alive) return;
+    const flagsSayBusy = this.isRunning();
+    this.phase = reducePhase(this.phase, signal);
+    const mismatch = compareBusy(flagsSayBusy, this.phase);
+    if (!mismatch) return;
+    this.phaseMismatches[mismatch] += 1;
+    if (mismatch === "conservative" || this.phaseMismatches.risky > 1) return;
+    if (process.env.NODE_ENV === "production") return;
+    console.warn(
+      `[pi-web] the shadow session phase reported idle after "${signal.type}" while the flags still report busy;`
+        + " lib/session/state.ts is missing a transition for that signal.",
+    );
   }
 
   /**
@@ -522,7 +619,7 @@ export class AgentSessionWrapper {
     this.extensionBindingPromise = (async () => {
       if (!this._alive) return;
       const uiContext = this.createExtensionUiContext();
-      if (typeof this.inner.bindExtensions === "function") {
+      if (hasBindExtensions(this.inner)) {
         const bindExtensions = this.inner.bindExtensions as (bindings: {
           uiContext?: ExtensionUiContextLike;
           mode?: "rpc";
@@ -587,12 +684,8 @@ export class AgentSessionWrapper {
     }
   }
 
-  private shouldWaitForExtensions(type: string): boolean {
-    return type === "prompt"
-      || type === "steer"
-      || type === "follow_up"
-      || type === "get_commands"
-      || type === "get_state";
+  private shouldWaitForExtensions(type: CommandType): boolean {
+    return COMMAND_META[type].waitsForExtensions === true;
   }
 
   private async withFinalIdleReset<T>(operation: () => Promise<T>): Promise<T> {
@@ -628,7 +721,7 @@ export class AgentSessionWrapper {
       return { cancelled: result.cancelled, ...(result.aborted ? { aborted: true } : {}) };
     }
 
-    const entries = this.inner.sessionManager.getEntries() as unknown as SessionEntry[];
+    const entries = toSessionEntries(this.inner.sessionManager.getEntries());
     if (!readSubagentSessionResources(entries)) {
       const activeAfter = this.inner.getActiveToolNames();
       this.setActiveToolSelection(
@@ -746,10 +839,12 @@ export class AgentSessionWrapper {
   ): Promise<T> {
     if (this.sessionReplacement) throw new Error("Session is already being copied");
     this.sessionReplacement = replacement;
+    this.advancePhase({ type: "replacement-started", replacement });
     try {
       return await operation();
     } finally {
       if (this._alive) this.sessionReplacement = null;
+      this.advancePhase({ type: "replacement-finished" });
     }
   }
 
@@ -771,8 +866,8 @@ export class AgentSessionWrapper {
     }
   }
 
-  async send(command: Record<string, unknown>): Promise<unknown> {
-    const type = command.type as string;
+  async send(command: SessionCommand): Promise<unknown> {
+    const type = command.type;
     const allowedDuringReplacement = COMMANDS_ALLOWED_DURING_SESSION_REPLACEMENT.has(type);
     if (this.sessionReplacement && !allowedDuringReplacement) {
       throw new Error("Session is being copied to a new session");
@@ -838,6 +933,7 @@ export class AgentSessionWrapper {
             if (this.pendingPromptCount === 0) {
               this.pendingPromptPreview = null;
               invalidateSessionListCache();
+              this.advancePhase({ type: "prompt-settled" });
             }
             this.resetIdleTimer();
             // The prompt promise settles AFTER agent_end/agent_settled were
@@ -850,6 +946,7 @@ export class AgentSessionWrapper {
           };
 
           this.pendingPromptCount += 1;
+          this.advancePhase({ type: "prompt-admitted" });
           // A submitted prompt belongs in the list before MCP/preflight or the
           // SDK's first message. Composer warm-up never enters this path.
           this.pendingPromptPreview ??= {
@@ -941,7 +1038,7 @@ export class AgentSessionWrapper {
 
       case "abort_retry":
         // Cancel an in-flight auto-retry backoff without aborting the whole run.
-        this.inner.abortRetry?.();
+        abortRetry(this.inner);
         return null;
 
       case "abort":
@@ -996,7 +1093,7 @@ export class AgentSessionWrapper {
           // so a session that has not sent anything yet falls back to the session getter, which
           // renders the prompt from the current options. The getter alone would drop those
           // per-run changes again once the run ends.
-          systemPrompt: this.exactSystemPrompt?.() ?? (this.inner.agent.state?.systemPrompt || this.inner.systemPrompt || ""),
+          systemPrompt: this.exactSystemPrompt?.() ?? (replayStateSystemPrompt(this.inner) || this.inner.systemPrompt || ""),
           thinkingLevel: this.inner.agent.state?.thinkingLevel ?? "off",
           extensionStatuses: this.getExtensionStatuses(),
           extensionWidgets: this.getExtensionWidgets(),
@@ -1102,16 +1199,22 @@ export class AgentSessionWrapper {
         // `summarize` asks pi to summarize the branch being left onto the target (pi's
         // "Summarize branch?" in /tree); the request blocks until the summary is written,
         // and abort_branch_summary answers it with { cancelled: true, aborted: true }.
-        return this.navigateTreeKeepingToolSelection(command.targetId as string, {
-          ...(command.summarize === true ? { summarize: true } : {}),
-          ...(typeof command.customInstructions === "string" && command.customInstructions.trim()
-            ? { customInstructions: command.customInstructions.trim() }
-            : {}),
-        });
+        const summarize = command.summarize === true;
+        if (summarize) this.advancePhase({ type: "branch-summary-started" });
+        try {
+          return await this.navigateTreeKeepingToolSelection(command.targetId as string, {
+            ...(summarize ? { summarize: true } : {}),
+            ...(typeof command.customInstructions === "string" && command.customInstructions.trim()
+              ? { customInstructions: command.customInstructions.trim() }
+              : {}),
+          });
+        } finally {
+          if (summarize) this.advancePhase({ type: "branch-summary-finished" });
+        }
       }
 
       case "abort_branch_summary": {
-        this.inner.abortBranchSummary?.();
+        abortBranchSummary(this.inner);
         return null;
       }
 
@@ -1146,7 +1249,7 @@ export class AgentSessionWrapper {
         return {
           ...this.inner.getSessionStats(),
           sessionName: this.inner.sessionManager.getSessionName(),
-          costBreakdown: getUsageCostBreakdown(this.inner.sessionManager.getEntries() as unknown as SessionEntry[]),
+          costBreakdown: getUsageCostBreakdown(toSessionEntries(this.inner.sessionManager.getEntries())),
           cacheWarming: this.getCacheWarming(),
         };
       }
@@ -1245,7 +1348,7 @@ export class AgentSessionWrapper {
         // pi rebuilds from the tools active before, then extensions adjust them as they start
         // again; carry that result so a tool one switched off during reload stays off.
         this.setActiveToolSelection(activeToolNames);
-        if (typeof this.inner.bindExtensions !== "function") {
+        if (!hasBindExtensions(this.inner)) {
           this.inner.extensionRunner.setUIContext?.(this.createExtensionUiContext(), "rpc");
         }
         invalidateModelsCache();
@@ -1273,12 +1376,13 @@ export class AgentSessionWrapper {
       }
 
       case "set_steering_mode": {
-        this.inner.setSteeringMode?.(command.mode as "all" | "one-at-a-time");
+        // Silently a no-op on a build without delivery modes, like the old `?.()`.
+        setSteeringMode(this.inner, command.mode);
         return null;
       }
 
       case "set_follow_up_mode": {
-        this.inner.setFollowUpMode?.(command.mode as "all" | "one-at-a-time");
+        setFollowUpMode(this.inner, command.mode);
         return null;
       }
 
@@ -1297,11 +1401,13 @@ export class AgentSessionWrapper {
           },
         );
         notifyRunningChange();
+        this.advancePhase({ type: "bash-started" });
         try {
           const result = await execution;
           this.persistBashOnlySession();
           return result;
         } finally {
+          this.advancePhase({ type: "bash-finished" });
           this.resetIdleTimer();
           invalidateSessionListCache();
           // executeBash emits no start/end SDK events (only output deltas);
@@ -2086,7 +2192,7 @@ export class AgentSessionWrapper {
     }
     // Unlike the CLI's /new, the browser keeps showing the model and tools picked for this
     // session, so the new one starts with the same selection.
-    const entries = this.inner.sessionManager.getEntries() as unknown as SessionEntry[];
+    const entries = toSessionEntries(this.inner.sessionManager.getEntries());
     const toolNames = readSessionToolSelection(entries);
     const model = this.inner.model;
     const thinkingLevel = this.inner.agent.state?.thinkingLevel;
@@ -2178,53 +2284,10 @@ export class AgentSessionWrapper {
 // Session registry
 // ============================================================================
 
-declare global {
-  var __piSessions: Map<string, AgentSessionWrapper> | undefined;
-  var __piStartLocks: Map<string, Promise<{ session: AgentSessionWrapper; realSessionId: string }>> | undefined;
-  var __piStartingSessionCwds: Map<string, number> | undefined;
-}
-
-function getRegistry(): Map<string, AgentSessionWrapper> {
-  if (!globalThis.__piSessions) {
-    globalThis.__piSessions = new Map();
-    const destroy = () => globalThis.__piSessions?.forEach((session) => session.destroy());
-    const shutdown = () => {
-      const sessions = Array.from(globalThis.__piSessions?.values() ?? []);
-      void Promise.allSettled(sessions.map((session) => session.shutdown()));
-    };
-    // Node cannot await work from an exit handler; direct destruction starts
-    // extension cleanup synchronously as a final best effort.
-    process.once("exit", destroy);
-    process.once("SIGINT", shutdown);
-    process.once("SIGTERM", shutdown);
-  }
-  return globalThis.__piSessions;
-}
-
-function registerRpcWrapper(wrapper: AgentSessionWrapper): void {
-  const registry = getRegistry();
-  const sessionId = wrapper.sessionId;
-  if (wrapper.sessionFile) cacheSessionPath(sessionId, wrapper.sessionFile);
-  // A closing wrapper reports itself dead while extensions shut down, so the
-  // next request registers a replacement under the same id. Finishing later,
-  // the closing wrapper must not unregister that replacement.
-  wrapper.onDestroy(() => {
-    if (registry.get(sessionId) !== wrapper) return;
-    registry.delete(sessionId);
-    // A destroyed wrapper leaves the running set (idle shutdown, branch
-    // switch, fork/clone replacement); push the new set so sidebars clear
-    // its spinner instead of waiting for the next broadcast.
-    notifyRunningChange();
-  });
-  // A wrapper registered before a hot reload still unregisters by id alone.
-  const previous = registry.get(sessionId);
-  if (previous && previous !== wrapper && typeof previous.onDestroy === "function") {
-    previous.onDestroy(() => {});
-  }
-  registry.set(sessionId, wrapper);
-  wrapper.start();
-  if (!wrapper.isChatOnly()) wrapper.beginExtensionBinding();
-}
+// The registry, its start locks and the running-set broadcast live in
+// ./session/registry (stage C of the SDK-boundary plan); the public surface is
+// re-exported at the bottom of this module so routes and tests keep importing
+// them from here.
 
 const SUBAGENT_CONTROLLER = createSubagentController({
   getSession: (sessionId) => getRegistry().get(sessionId),
@@ -2257,11 +2320,6 @@ export function abortSubagent(sessionId: string) {
   return SUBAGENT_CONTROLLER.abort(sessionId);
 }
 
-function getLocks(): Map<string, Promise<{ session: AgentSessionWrapper; realSessionId: string }>> {
-  if (!globalThis.__piStartLocks) globalThis.__piStartLocks = new Map();
-  return globalThis.__piStartLocks;
-}
-
 const CLOSING_SESSION_WAIT_MARGIN_MS = 1_000;
 const closingSessionWaits = new WeakMap<AgentSessionWrapper, { done: boolean; promise: Promise<void> }>();
 
@@ -2291,35 +2349,6 @@ function closingRpcSessionWait(sessionId: string): Promise<void> | null {
     wait = entry;
   }
   return wait.done ? null : wait.promise;
-}
-
-function normalizeRpcCwd(cwd: string): string {
-  const resolvedCwd = resolve(cwd);
-  try {
-    return realpathSync(resolvedCwd);
-  } catch {
-    return resolvedCwd;
-  }
-}
-
-function getStartingSessionCwds(): Map<string, number> {
-  if (!globalThis.__piStartingSessionCwds) globalThis.__piStartingSessionCwds = new Map();
-  return globalThis.__piStartingSessionCwds;
-}
-
-function trackStartingSession(cwd: string): () => void {
-  const startingCwds = getStartingSessionCwds();
-  const key = normalizeRpcCwd(cwd);
-  startingCwds.set(key, (startingCwds.get(key) ?? 0) + 1);
-  return () => {
-    const remaining = (startingCwds.get(key) ?? 1) - 1;
-    if (remaining > 0) startingCwds.set(key, remaining);
-    else startingCwds.delete(key);
-  };
-}
-
-export function getRpcSession(sessionId: string): AgentSessionWrapper | undefined {
-  return getRegistry().get(sessionId);
 }
 
 export interface SetRpcSessionToolsResult {
@@ -2355,7 +2384,7 @@ export async function setRpcSessionTools(
       return setRpcSessionTools(sessionId, sessionFile, requestedToolNames);
     }
     const manager = SessionManager.open(sessionFile, undefined);
-    if (readSubagentSessionResources(manager.getEntries() as unknown as SessionEntry[])) {
+    if (readSubagentSessionResources(toSessionEntries(manager.getEntries()))) {
       throw new Error("Subagent tool selection is fixed by its profile");
     }
     if (toolNames === undefined) appendClearedSessionToolSelection(manager);
@@ -2366,7 +2395,7 @@ export async function setRpcSessionTools(
   }
 
   if (existing.isRunning()) throw new Error("Cannot change tools while the session is running");
-  if (readSubagentSessionResources(existing.inner.sessionManager.getEntries() as unknown as SessionEntry[])) {
+  if (readSubagentSessionResources(toSessionEntries(existing.inner.sessionManager.getEntries()))) {
     throw new Error("Subagent tool selection is fixed by its profile");
   }
 
@@ -2438,15 +2467,13 @@ export function getRpcSessionInfos(options: { includeTransient?: boolean } = {})
     const manager = session.inner?.sessionManager;
     if (!manager) continue;
     const header = manager.getHeader();
-    const entries = manager.getEntries() as unknown as Array<
-      { type: string; timestamp: string } | SessionMessageEntry
-    >;
+    const entries = toSessionEntries(manager.getEntries());
     const messages = entries.filter((entry): entry is SessionMessageEntry => entry.type === "message");
     const firstUserMessage = messages.find((entry) => entry.message.role === "user");
     const pendingPrompt = session.getPendingPromptPreview?.();
     const sessionFile = manager.getSessionFile() ?? session.sessionFile;
     const persisted = Boolean(sessionFile && existsSync(sessionFile));
-    const subagent = readSubagentRun(entries as unknown as SessionEntry[], header?.id ?? session.sessionId, sessionFile ?? "");
+    const subagent = readSubagentRun(entries, header?.id ?? session.sessionId, sessionFile ?? "");
 
     // An ensure_session call creates an idle, empty runtime while the composer
     // loads commands. Show submitted prompts even before the SDK records them.
@@ -2485,80 +2512,6 @@ export function getRpcSessionInfos(options: { includeTransient?: boolean } = {})
     });
   }
   return sessions;
-}
-
-export function hasBusyRpcSessionForCwd(cwd: string): boolean {
-  const targetCwd = normalizeRpcCwd(cwd);
-  if (getStartingSessionCwds().has(targetCwd)) return true;
-  return Array.from(getRegistry().values()).some(
-    (session) => normalizeRpcCwd(session.cwd) === targetCwd && session.isRunning(),
-  );
-}
-
-export async function destroyRpcSessionsForCwd(cwd: string): Promise<number> {
-  const targetCwd = normalizeRpcCwd(cwd);
-  const sessions = Array.from(getRegistry().values()).filter(
-    (session) => normalizeRpcCwd(session.cwd) === targetCwd,
-  );
-  await Promise.all(sessions.map((session) => session.shutdown()));
-  return sessions.length;
-}
-
-declare global {
-  var __piRunningListeners: Set<(ids: string[]) => void> | undefined;
-}
-
-function getRunningListeners(): Set<(ids: string[]) => void> {
-  if (!globalThis.__piRunningListeners) globalThis.__piRunningListeners = new Set();
-  return globalThis.__piRunningListeners;
-}
-
-export function subscribeRunningSessions(listener: (ids: string[]) => void): () => void {
-  const listeners = getRunningListeners();
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
-}
-
-let lastRunningSnapshot = "";
-
-/**
- * Recompute the running-session-id set and, if it changed since the last
- * notification, broadcast it to subscribers.
- */
-export function notifyRunningChange(): void {
-  const listeners = getRunningListeners();
-  if (listeners.size === 0) {
-    // A future subscriber receives its own initial snapshot. Clear this one so
-    // its first state transition cannot match stale state from an old listener.
-    lastRunningSnapshot = "";
-    return;
-  }
-  const ids = getRunningRpcSessionIds();
-  // List changes must reach every window even when the running ids stay unchanged.
-  const snapshot = JSON.stringify({ ids: [...ids].sort(), version: getSessionListVersion() });
-  if (snapshot === lastRunningSnapshot) return;
-  lastRunningSnapshot = snapshot;
-  for (const listener of listeners) {
-    try { listener(ids); } catch { /* ignore listener errors */ }
-  }
-}
-
-export function getRunningRpcSessionIds(): string[] {
-  const ids = new Set<string>();
-  for (const [sessionId, session] of getRegistry()) {
-    if (session.isRunning()) ids.add(session.sessionId || sessionId);
-  }
-  return [...ids];
-}
-
-export function getCompletionNotificationSuppressedRpcSessionIds(): string[] {
-  const ids = new Set<string>();
-  for (const [sessionId, session] of getRegistry()) {
-    if (session.isRunning() && session.hasSuppressedCompletionNotifications()) {
-      ids.add(session.sessionId || sessionId);
-    }
-  }
-  return [...ids];
 }
 
 /**
@@ -2612,12 +2565,12 @@ export async function startRpcSession(
   const sessionCwd = sessionManager.getCwd();
   const subagentResources = sessionFile
     ? readSubagentSessionResources(
-        sessionManager.getEntries() as unknown as SessionEntry[],
+        toSessionEntries(sessionManager.getEntries()),
       )
     : null;
   const persistedToolNames = subagentResources
     ? undefined
-    : readSessionToolSelection(sessionManager.getEntries() as unknown as SessionEntry[]);
+    : readSessionToolSelection(toSessionEntries(sessionManager.getEntries()));
   const selectedToolNames = subagentResources?.tools ?? persistedToolNames ?? requestedToolNames;
   if (!subagentResources && persistedToolNames === undefined && requestedToolNames !== undefined) {
     appendSessionToolSelection(sessionManager, requestedToolNames);
@@ -2731,8 +2684,8 @@ export async function startRpcSession(
     // same model here so the displayed model cannot jump when the wrapper
     // lazily starts and would otherwise land on the configured default.
     const savedModel = hasExistingMessages
-      ? getLatestModelChange(branch as unknown as SessionEntry[])
-        ?? getLatestResponseModel(branch as unknown as SessionEntry[])
+      ? getLatestModelChange(toSessionEntries(branch))
+        ?? getLatestResponseModel(toSessionEntries(branch))
       : null;
     const restoredModel = savedModel
       ? services.modelRuntime.getModel(savedModel.provider, savedModel.modelId)

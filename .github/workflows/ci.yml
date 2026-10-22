@@ -27,6 +27,31 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm test
 
+  # The merge boundary is measured, not remembered: `drift` recomputes each
+  # fork-modified upstream file and fails when the manifest's recorded risk no
+  # longer matches, `drift:sdk` ratchets the SDK facade (stage A5), and
+  # `check:ownership` fails when a high-risk file has no sentinel (stage E1).
+  # No `npm ci`: the scripts use Node built-ins and the manifest only.
+  ownership:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `drift` diffs against the last synced upstream commit, which the
+          # default single-commit checkout does not contain.
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+      - run: npm run drift
+      - run: npm run drift:sdk
+      - run: npm run check:ownership
+      # The agent-facing docs are the map agents navigate by; a renamed module
+      # otherwise leaves a sentence pointing at nothing (stage F1).
+      - run: npm run check:docs
+
   # The desktop shell (src-tauri) is otherwise only compiled by the release
   # workflow, so a Rust error would surface at publish time.
   desktop-shell:

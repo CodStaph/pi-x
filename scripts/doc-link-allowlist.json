@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "note": "Paths the docs name on purpose although no file exists at that path. Every entry needs a reason; `npm run check:docs` also fails when an entry is no longer referenced, so the list cannot rot.",
+  "paths": {
+    "lib/startup-preferences.ts": "Deleted by upstream #871. AGENTS.md and docs/merge-history.md say it stays deleted; the sentence exists to stop a merge from reinstating it.",
+    "app/api/models/test": "AGENTS.md names it to say it is NOT a route (the real one is app/api/models-config/test/route.ts).",
+    "components/McpPanel.tsx": "Deleted in the v0.10.0 merge (upstream's McpConfig won). docs/merge-history.md records it as history.",
+    "lib/mcp-config.ts": "Deleted in the v0.10.0 merge. docs/merge-history.md records it as history.",
+    "lib/i18n/messages/ja.ts": "Example path in the 'add a locale' instructions (docs/i18n.md), not a file that exists.",
+    "lib/session/start.ts": "Planned by stage C2-3 of docs/architecture-improvement-plan.zh-CN.md; not created yet.",
+    "lib/session/wrapper.ts": "Planned by stage C2-4; not created yet.",
+    "lib/composer-send.ts": "Planned by stage C2-5; not created yet."
+  }
+}

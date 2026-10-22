@@ -19,9 +19,9 @@ import { abortSubagent, getRpcSession, getRpcSessionInfos } from "@/lib/rpc-mana
 import { projectTreeForResponse, toSummaryTree } from "@/lib/project-tree";
 import { computeSessionTotalActiveMs } from "@/lib/session-timing";
 import { computeSessionStats } from "@/lib/session-stats";
+import { parseSessionEntryLines, toSessionEntries } from "@/lib/pi/entries";
 import { startServerPerf } from "@/lib/perf";
 import { computeSessionRevision } from "@/lib/session-revision";
-import type { SessionEntry } from "@/lib/types";
 import { readSubagentRun, readSubagentSessionResources, SUBAGENT_META_TYPE } from "@/lib/subagents";
 import { readSessionToolSelection } from "@/lib/session-tool-selection";
 import { jsonResponse } from "@/lib/json-response";
@@ -58,7 +58,7 @@ export async function GET(
     const sm = liveRpc?.inner.sessionManager ?? openSessionManager(resolvedPath!);
     perf?.span("open");
     const filePath = liveRpc?.sessionFile || sm.getSessionFile() || resolvedPath || "";
-    const entries = sm.getEntries();
+    const entries = toSessionEntries(sm.getEntries());
     const leafId = sm.getLeafId();
     const summaryTree = searchParams.get("tree") === "summary";
     const tree = summaryTree
@@ -71,7 +71,7 @@ export async function GET(
     const tail = Number.isFinite(rawTail) && rawTail > 0 ? Math.min(rawTail, 1000) : 50;
     // Chat-view loads ask for whole turns; the default keeps `tail` an exact cap.
     const wholeTurns = searchParams.has("wholeTurns");
-    const context = buildSessionContext(entries as never, leafId, {
+    const context = buildSessionContext(entries, leafId, {
       deferThinking,
       deferToolResultImages,
       tail,
@@ -83,7 +83,7 @@ export async function GET(
     // Cumulative usage over ALL entries, including history compacted away —
     // the same aggregation the SDK's getSessionStats() uses. Lets the client
     // keep monotonic token/cost counters across compaction and page reloads.
-    const stats = computeSessionStats(entries as unknown as SessionEntry[]);
+    const stats = computeSessionStats(entries);
     perf?.span("stats");
     // Opaque freshness token for the session view cache. Derived from the
     // disk fingerprint and the actual read source; null tells the client the
@@ -107,10 +107,10 @@ export async function GET(
       ? await resolveSessionIdByPath(header.parentSession)
       : undefined;
     const subagent = header
-      ? readSubagentRun(entries as never, header.id, filePath)
+      ? readSubagentRun(entries, header.id, filePath)
       : null;
-    const toolNames = readSubagentSessionResources(entries as never)?.tools
-      ?? readSessionToolSelection(entries as never);
+    const toolNames = readSubagentSessionResources(entries)?.tools
+      ?? readSessionToolSelection(entries);
     const info = header ? (await attachSessionProjectInfo([{
       path: filePath,
       id: header.id,
@@ -264,9 +264,7 @@ export async function DELETE(
           const lines = readFileSync(childPath, "utf8").split("\n");
           const header = JSON.parse(lines[0]) as { type?: string; id?: string };
           if (header.type !== "session" || typeof header.id !== "string") continue;
-          const entries = lines.slice(1).flatMap((line) => {
-            try { return [JSON.parse(line) as SessionEntry]; } catch { return []; }
-          });
+          const entries = parseSessionEntryLines(lines.slice(1));
           const subagent = readSubagentRun(entries, header.id, childPath);
           if (!subagent) continue;
           const children = childrenByParent.get(subagent.parentSessionId) ?? [];

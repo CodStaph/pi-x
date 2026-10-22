@@ -30,7 +30,7 @@ import {
   type SubagentResultMetadata,
   type SubagentRunInfo,
 } from "./subagents";
-import type { SessionEntry } from "./types";
+import { toSessionEntries } from "./pi/entries";
 import { buildSubagentPromptPlan } from "./subagent-prompt";
 import { createExactSystemPromptExtension } from "./exact-system-prompt";
 import { appendSubagentInputFiles, loadSubagentInputFiles } from "./subagent-input";
@@ -594,7 +594,7 @@ export function createSubagentController(
     const wrapper = dependencies.getSession(sessionId);
     if (wrapper?.isAlive()) {
       const run = readSubagentRun(
-        wrapper.inner.sessionManager.getEntries() as unknown as SessionEntry[],
+        toSessionEntries(wrapper.inner.sessionManager.getEntries()),
         sessionId,
         wrapper.sessionFile,
       );
@@ -604,7 +604,7 @@ export function createSubagentController(
     const sessionPath = await dependencies.resolveSessionPath(sessionId);
     if (!sessionPath) return null;
     const manager = SessionManager.open(sessionPath);
-    const run = readSubagentRun(manager.getEntries() as unknown as SessionEntry[], sessionId, sessionPath);
+    const run = readSubagentRun(toSessionEntries(manager.getEntries()), sessionId, sessionPath);
     return run && settleOrphanedRun(run);
   }
 

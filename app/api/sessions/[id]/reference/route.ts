@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { buildSessionContext, resolveSessionPath } from "@/lib/session-reader";
 import { openSessionManagerForRead } from "@/lib/session-manager-access";
 import { formatSessionReference } from "@/lib/session-reference";
+import { toSessionEntries } from "@/lib/pi/entries";
 
 export async function GET(
   _req: Request,
@@ -15,7 +16,7 @@ export async function GET(
     const sm = openSessionManagerForRead(id, filePath);
     if (!sm) return NextResponse.json({ error: "Session not found" }, { status: 404 });
 
-    const context = buildSessionContext(sm.getEntries() as never, sm.getLeafId(), {
+    const context = buildSessionContext(toSessionEntries(sm.getEntries()), sm.getLeafId(), {
       deferThinking: false,
       deferToolResultImages: true,
     });

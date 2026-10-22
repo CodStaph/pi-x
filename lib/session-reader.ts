@@ -11,6 +11,7 @@ import { getThinkingPreview } from "./message-display";
 import { projectIdentityKey } from "./project-identity";
 import { sessionPathKey } from "./session-path";
 import { MAX_TOOL_RESULT_IMAGE_BYTES, TOOL_RESULT_IMAGE_MIMES } from "./tool-result-images";
+import { parseSessionEntryLines, toSessionEntries } from "./pi/entries";
 import { projectToolResultDetails, slimToolResultMessage } from "./tool-result-details";
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
@@ -86,17 +87,6 @@ function readBoundedTailLines(filePath: string, maxBytes: number): string[] {
   }
 }
 
-function parseSessionEntries(lines: readonly string[]): SessionEntry[] {
-  return lines.flatMap((line) => {
-    try {
-      const entry = JSON.parse(line) as SessionEntry;
-      return [entry];
-    } catch {
-      return [];
-    }
-  });
-}
-
 /**
  * Entry id carried by one serialized JSONL line, or undefined when the line is
  * the session header, malformed, or a torn trailing write mid-append.
@@ -139,7 +129,7 @@ export function readLatestSessionEntryId(filePath: string | undefined): string |
 }
 
 function readSessionRelationEntries(filePath: string): SessionEntry[] {
-  const prefixEntries = parseSessionEntries(
+  const prefixEntries = parseSessionEntryLines(
     readBoundedLines(filePath, SESSION_RELATION_MAX_BYTES, SESSION_RELATION_MAX_LINES).slice(1),
   );
   const isSubagent = prefixEntries.some((entry) => (
@@ -149,7 +139,7 @@ function readSessionRelationEntries(filePath: string): SessionEntry[] {
 
   return [
     ...prefixEntries,
-    ...parseSessionEntries(readBoundedTailLines(filePath, SESSION_RESULT_MAX_BYTES)),
+    ...parseSessionEntryLines(readBoundedTailLines(filePath, SESSION_RESULT_MAX_BYTES)),
   ];
 }
 
@@ -657,7 +647,7 @@ export function readSessionHeader(filePath: string): SessionHeader | null {
 
 export function getSessionEntries(filePath: string): SessionEntry[] {
   const entries = openSessionManager(filePath).getEntries();
-  return entries as unknown as SessionEntry[];
+  return toSessionEntries(entries);
 }
 
 export function getLatestModelChange(entries: SessionEntry[]): SessionContext["model"] {

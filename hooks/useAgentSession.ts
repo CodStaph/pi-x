@@ -26,6 +26,13 @@ import { clearDraft, getDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
 import { CONFIGURED_TOOL_PRESET, getPresetFromToolNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 import type { SessionStatsInfo } from "@/lib/pi-types";
+import type {
+  AgentStateResponse,
+  CompactCommandResult,
+  SlashCommandInfo,
+} from "@/lib/pi/session-commands";
+// The composer imports the slash-command shape from this hook; the contract owns it.
+export type { SlashCommandInfo } from "@/lib/pi/session-commands";
 import { mergeSessionStats, type SessionFileStats } from "@/lib/session-stats";
 import { userMessageKey } from "@/lib/prompt-recovery";
 import { AgentEventConnection } from "@/lib/agent-event-connection";
@@ -88,37 +95,6 @@ interface AgentEvent {
   [key: string]: unknown;
 }
 
-interface CompactCommandResult {
-  tokensBefore?: number;
-  estimatedTokensAfter?: number;
-}
-
-interface LastAssistantTextResponse {
-  text?: string;
-}
-
-type AgentStateResponse = {
-  model?: { provider: string; id: string };
-  contextUsage?: { percent: number | null; contextWindow: number; tokens: number | null } | null;
-  systemPrompt?: string;
-  thinkingLevel?: string;
-  isStreaming?: boolean;
-  isPromptRunning?: boolean;
-  isBashRunning?: boolean;
-  isCompacting?: boolean;
-  /** In-memory partial assistant message, present while a run is streaming. */
-  streamingMessage?: AgentMessage;
-  extensionStatuses?: ExtensionStatusItem[];
-  extensionWidgets?: ExtensionWidgetItem[];
-  routedModel?: RoutedModelInfo;
-  cacheWarming?: CacheWarmingInfo;
-  queuedMessages?: { steering?: string[]; followUp?: string[] } | null;
-  autoCompactionEnabled?: boolean;
-  autoRetryEnabled?: boolean;
-  steeringMode?: string;
-  followUpMode?: string;
-};
-
 export interface SessionAutomation {
   autoCompactionEnabled: boolean | null;
   autoRetryEnabled: boolean | null;
@@ -175,19 +151,6 @@ export interface CompactResultInfo {
   reason: "manual" | "threshold" | "overflow" | "auto" | string;
   tokensBefore: number;
   estimatedTokensAfter: number;
-}
-
-export interface SlashCommandInfo {
-  name: string;
-  description?: string;
-  source: "extension" | "prompt" | "skill";
-  sourceInfo?: {
-    path: string;
-    source: string;
-    scope: "user" | "project" | "temporary";
-    origin: "package" | "top-level";
-    baseDir?: string;
-  };
 }
 
 export type BuiltinSlashCommandResult =
@@ -348,10 +311,6 @@ type ModelsResponse = {
   thinkingLevelPins?: Record<string, string>;
   modelError?: string;
   modelScopeWarnings?: ModelScopeWarning[];
-};
-
-type SlashCommandsResponse = {
-  commands?: SlashCommandInfo[];
 };
 
 export function useAgentSession(opts: UseAgentSessionOptions) {
@@ -1007,7 +966,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       && toolsLoadIdRef.current === requestId
     );
     try {
-      const tools = await sendAgentCommand<ToolEntry[]>(sid, { type: "get_tools" });
+      const tools = await sendAgentCommand(sid, { type: "get_tools" });
       if (!tools || !isCurrent() || !sessionHookMountedRef.current) return null;
       const { getPresetFromTools } = await import("@/lib/tool-presets");
       setToolPresetState(sessionToolsPinnedRef.current ? getPresetFromTools(tools) : CONFIGURED_TOOL_PRESET);
@@ -1113,7 +1072,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (!sid) return;
 
     const [state] = await Promise.all([
-      sendAgentCommand<AgentStateResponse>(sid, { type: "get_state" }),
+      sendAgentCommand(sid, { type: "get_state" }),
       loadTools(sid),
     ]);
     if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) return;
@@ -1152,7 +1111,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       setSlashCommandsLoading(true);
       try {
-        const data = await sendAgentCommand<SlashCommandsResponse>(sid, { type: "get_commands" });
+        const data = await sendAgentCommand(sid, { type: "get_commands" });
         const commands = data?.commands ?? [];
         if (current()) replaceSlashCommands(commands);
         return commands;
@@ -2173,7 +2132,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (!sid) return;
     setForkingEntryId(entryId);
     try {
-      const result = await sendAgentCommand<{ cancelled?: boolean; newSessionId?: string }>(sid, {
+      const result = await sendAgentCommand(sid, {
         type: "fork",
         entryId,
       });
@@ -2194,7 +2153,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const sid = sessionIdRef.current;
     if (!sid) return false;
     try {
-      const result = await sendAgentCommand<{ cancelled?: boolean }>(sid, {
+      const result = await sendAgentCommand(sid, {
         type: "navigate_tree",
         targetId: entryId,
       });
@@ -2217,7 +2176,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     branchSummarySessionIdRef.current = sid;
     setBranchSummarySessionId(sid);
     try {
-      const result = await sendAgentCommand<{ cancelled?: boolean; aborted?: boolean }>(sid, {
+      const result = await sendAgentCommand(sid, {
         type: "navigate_tree",
         targetId: leafId,
         summarize: true,
@@ -2301,7 +2260,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     setCurrentModelOverride(target);
     setModelSwitching(true);
     try {
-      const selected = await sendAgentCommand<{ provider: string; id: string }>(sid, { type: "set_model", provider, modelId });
+      const selected = await sendAgentCommand(sid, { type: "set_model", provider, modelId });
       setLiveModel({ provider: selected.provider, modelId: selected.id });
       // Pi persists model_change synchronously. Reload the canonical session so
       // the model, thinking level, and active leaf all advance together.
@@ -2332,7 +2291,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     setCompactNotice(null);
     setCompactResult(null);
     try {
-      const result = await sendAgentCommand<CompactCommandResult>(sid, { type: "compact" });
+      const result = await sendAgentCommand(sid, { type: "compact" });
       setCompactResult(readCompactResult(result, "manual"));
       // includeState: manual compact ends no model run, so no agent_end ever
       // refreshes contextUsage — the ring would keep the pre-compact percentage
@@ -2471,7 +2430,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           setCompactError(null);
           setCompactNotice(null);
           setCompactResult(null);
-          const result = await sendAgentCommand<CompactCommandResult>(sid, {
+          const result = await sendAgentCommand(sid, {
             type: "compact",
             ...(args ? { customInstructions: args } : {}),
           });
@@ -2485,7 +2444,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (!sid) return complete({ handled: true, error: "No active session" });
           // Read the live wrapper (this POST starts it if idle) so the toggle
           // follows settings.json, not the React default of `true`.
-          const liveState = await sendAgentCommand<AgentStateResponse>(sid, { type: "get_state" });
+          const liveState = await sendAgentCommand(sid, { type: "get_state" });
           const nextEnabled = !(liveState?.autoCompactionEnabled ?? true);
           await sendAgentCommand(sid, {
             type: "set_auto_compaction",
@@ -2524,7 +2483,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (!sid) return complete({ handled: true, error: "No active session" });
           const sessionGeneration = sessionGenerationRef.current;
           const runId = promptRunIdRef.current;
-          const stats = await sendAgentCommand<SessionStatsInfo>(sid, { type: "get_session_stats" });
+          const stats = await sendAgentCommand(sid, { type: "get_session_stats" });
           if (
             sessionIdRef.current !== sid
             || sessionGenerationRef.current !== sessionGeneration
@@ -2554,7 +2513,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
         case "copy": {
           if (!sid) return complete({ handled: true, error: "No active session" });
-          const data = await sendAgentCommand<LastAssistantTextResponse>(sid, { type: "get_last_assistant_text" });
+          const data = await sendAgentCommand(sid, { type: "get_last_assistant_text" });
           const textToCopy = data?.text ?? "";
           if (!textToCopy) return complete({ handled: true, error: "No assistant message to copy" });
           await navigator.clipboard.writeText(textToCopy);
@@ -2566,7 +2525,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (agentRunningRef.current || bashRunningRef.current) {
             return complete({ handled: true, error: "Cannot clone while the session is running" });
           }
-          const result = await sendAgentCommand<{ cancelled?: boolean; newSessionId?: string }>(sid, {
+          const result = await sendAgentCommand(sid, {
             type: "clone",
             leafId: activeLeafId,
           });
@@ -2665,7 +2624,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const sid = sessionIdRef.current;
     if (!sid) return;
     try {
-      const result = await sendAgentCommand<{ steering?: string[]; followUp?: string[] }>(sid, { type: "clear_queue" });
+      const result = await sendAgentCommand(sid, { type: "clear_queue" });
       // clearQueue also emits an empty queue_update, but that only reaches us
       // while SSE is connected — clear locally so idle recalls update the UI.
       setQueuedMessages({ steering: [], followUp: [] });
@@ -2731,7 +2690,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       // Omitting toolNames retracts the session's pin so it follows the configured
       // defaults again; the server rebuilds the session to resolve them.
-      const result = await sendAgentCommand<{ sessionId?: string; recreated?: boolean }>(sid, {
+      const result = await sendAgentCommand(sid, {
         type: "set_tools",
         ...(toolNames !== undefined ? { toolNames } : {}),
       });
@@ -2754,7 +2713,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setExtensionStatuses([]);
       setExtensionWidgets([]);
       const [state] = await Promise.all([
-        sendAgentCommand<AgentStateResponse>(activeSessionId, { type: "get_state" }),
+        sendAgentCommand(activeSessionId, { type: "get_state" }),
         loadTools(activeSessionId),
       ]);
       if (sessionHookMountedRef.current && sessionIdRef.current === activeSessionId) {
