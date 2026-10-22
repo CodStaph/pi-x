@@ -118,6 +118,31 @@ the fork already has.
 | `c713fca` | 2026-10-15 | fix(file-viewer): keep the line-number gutter pinned and ease the code font (#1200) | 2 | 1 (1 high) |
 | `3ff7e1d` | 2026-10-11 | fix(terminal): keep input alive when the phone keyboard collapses the panel (#1160) | 2 | 1 |
 
+## Assessed and rejected (route C, first pass)
+
+Three candidates from the table above were examined and dropped. None of them was
+a matter of effort — each one fails a different applicability check, which is why
+that check comes before the cherry-pick.
+
+| upstream | why it does not apply |
+|---|---|
+| `1a94341` perf(sessions): rescan only the appended tail | **Depends on earlier v0.11/0.12 refactors.** 513 changed lines against a scanner whose index format was rebuilt upstream (`INDEX_FORMAT_VERSION` 1 there vs 2 here), and the resume logic assumes fields those commits added. Porting it alone yields a half-migrated index. Port the scanner series as a unit, or not at all. |
+| `ac54e01` fix(files): find a changed file's own repository for its diff | **The fork's route is not upstream's.** `app/api/git/diff/route.ts` came from `6e0b9d1 feat(explorer): complete quick changes viewer`; upstream's test file never existed here (`git log --diff-filter=D` is empty), so the fix targets a different implementation. |
+| `bf0730c` fix(files): stop overflowing panel tabs from being clipped | **Already solved differently.** The fork styles tabs with `.file-tab-bar` in `app/native-theme.css` (100% height, hidden scrollbar) instead of upstream's inline 36px bar; re-adopting upstream's inline styles would undo the CSS extraction, and its test asserts those inline styles. |
+
+## Applicability check (run before `cherry-pick`)
+
+1. **Do the target files exist here, with the same provenance?**
+   `git log --oneline -3 -- <path>` — a route that came from a fork commit is a
+   different implementation, however similar the filename.
+2. **Has the fork already solved the same problem another way?**
+   Grep `app/native-theme.css` and `AGENTS.md`'s declined-UI list. A CSS-class
+   refactor makes an upstream inline-style fix non-portable, and its test will
+   assert the inline style.
+3. **Does the commit assume an earlier refactor?**
+   Read the diff for fields/constants that do not exist here. A single commit in
+   the middle of a series is not portable on its own; take the series or skip it.
+
 ## Not ported on purpose
 
 - `feat` commits adding `ChatMinimap`, `SessionSearch`, the sidebar explorer pane,
