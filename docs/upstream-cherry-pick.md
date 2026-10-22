@@ -48,6 +48,7 @@ assertion.
 |---|---|---|
 | `cf3ebfb` fix(security): rotate preview-mode secrets at startup | `23929fb` | closed a proxy bypass (`x-prerender-revalidate` skipped `proxy.ts`). Conflicts: kept the fork's `network-exposure-warning` module instead of upstream's inline copy; skipped the read-only-directory test on Windows. |
 | `6425d0d` perf(server): start the pi SDK import at startup | `e515054` | auto-merged. Note: `lib/migrations` already imports `getAgentDir`, so the SDK is loaded during register() anyway; the warm-up makes that independent of the accident. Fixing the ratchet's blind spots (lazy imports, root files) raised its baseline to 73 / 92 / 25. |
+| `8f3a71e` perf(sessions): omit provider signatures from browser payloads | `71f40bc` | signature strip runs *before* the fork's `slimToolResultMessage` projection (upstream's separate block would have skipped it), in both the wire and `entryToUiMessage`; non-assistant `message_start` now carries only its role. `isMessageGroupAnchor` left unimported — its users are later v0.12 commits that are not ported. |
 
 ## Candidates
 
