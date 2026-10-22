@@ -53,6 +53,8 @@ assertion.
 |---|---|---|
 | `cf3ebfb` fix(security): rotate preview-mode secrets at startup | `23929fb` | closed a proxy bypass (`x-prerender-revalidate` skipped `proxy.ts`). Conflicts: kept the fork's `network-exposure-warning` module instead of upstream's inline copy; skipped the read-only-directory test on Windows. |
 | `6425d0d` perf(server): start the pi SDK import at startup | `e515054` | auto-merged. Note: `lib/migrations` already imports `getAgentDir`, so the SDK is loaded during register() anyway; the warm-up makes that independent of the accident. Fixing the ratchet's blind spots (lazy imports, root files) raised its baseline to 73 / 92 / 25. |
+| `8e602ca` fix(sessions): discover external session files without manual refresh | `b1c2ef9` | scanner series 1/2: filename-only membership check, at most once per second. |
+| `1a94341` perf(sessions): rescan only the appended tail of a growing session file | `6ad7260` | scanner series 2/2. Resume points (inode, offset, header+tail hash, running totals); index writes throttled to 5 s. Fork work: `compactionCount` threaded through `ScanTotals`/`foldEntry`/`ResumePoint` (upstream has no such count), `INDEX_FORMAT_VERSION` stays 2 because a resume point is optional. |
 | `3ff7e1d` fix(terminal): keep input alive when the phone keyboard collapses the panel | `41a7514` | rows ≥ 1 accepted and clamped to 2 on both sides. |
 | `11c2aa2` fix(worktrees): group a bare clone's worktrees under the clone | `80f8f42` | `repoRootFromCommonDir()` walks up to the owning checkout. |
 | `a3a158a` fix(models): list models in pi's /model order | `cc23998` | new `orderSelectorModels()`; conflicts needed both test blocks and the fork's `buttonTitle` restored for its aria-label. |
@@ -166,11 +168,29 @@ that check comes before the cherry-pick.
 
 ## Candidate pool status
 
-After 17 ports and 7 rejections, the automated filter (files exist here, at most
-two manifest hits, no high-risk file) is exhausted: the remaining fixes all touch
-the large runtime files the wrapper split would also rewrite. The next candidates
-need either the merge window (stage C2-3/C2-4) or a deliberate decision to port a
-series rather than a commit.
+After 19 ports and 7 rejections, the automated filter (files exist here, at most
+two manifest hits, no high-risk file) is exhausted. **Series porting is the working
+answer**: the scanner pair (`8e602ca` + `1a94341`) landed as two commits, the first
+of which supplies the imports and tests the second assumes, and neither is usable
+alone.
+
+Measured with the series' own bench (`lib/session-list-scanner.bench.mjs`, 2000
+synthetic sessions / 137 MiB):
+
+| mode | median |
+|---|---|
+| SDK full scan | 1161 ms |
+| Scanner, no index | 1017 ms |
+| Scanner, memory index | 53 ms |
+| Scanner, persisted index (new process) | 91 ms |
+| **150 MiB session, one appended line** | **2.6 ms** (862.7 ms without resume) |
+
+That last row is the point of the series: a running session's listing used to
+re-read its whole file on every append.
+
+Remaining candidates all touch the large runtime files the wrapper split would
+rewrite. The next step is either the merge window (stage C2-3/C2-4) or another
+deliberate series.
 
 ## Not ported on purpose
 
