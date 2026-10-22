@@ -1,10 +1,14 @@
-import { configureHttpDispatcher } from "@/lib/http-dispatcher";
+import { configureHttpDispatcher, readHttpIdleTimeoutMs } from "@/lib/http-dispatcher";
 import { closeAllAgentEventStreams } from "@/lib/agent-event-stream";
 import { runStartupMigrations } from "@/lib/migrations";
 import { startScheduler } from "@/lib/scheduled-tasks";
 
 export function registerNodeInstrumentation(): void {
-  configureHttpDispatcher();
+  // The pi CLI applies settings' `httpIdleTimeoutMs` to the same undici
+  // body/header timeouts, so a Web UI session gets the timeout the user
+  // configured. Without it the built-in five minutes aborts a provider stream
+  // that stays quiet for longer, which a CLI session tolerates.
+  configureHttpDispatcher(readHttpIdleTimeoutMs());
 
   // Data migrations for pi-web's own files run once, before anything else can
   // write. The runner logs a failure and keeps the server up (lib/migrations).
