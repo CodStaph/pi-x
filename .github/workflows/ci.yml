@@ -25,7 +25,18 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npx tsc --noEmit
-      - run: npm test
+      - name: Test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test.log || {
+            # This repository's job logs need admin rights, so a failing test name
+            # would be invisible from outside. Check-run annotations are public:
+            # emit each failing test as one, then fail the step.
+            grep -E '^✖ ' test.log | head -20 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          }
 
   # The merge boundary is measured, not remembered: `drift` recomputes each
   # fork-modified upstream file and fails when the manifest's recorded risk no
