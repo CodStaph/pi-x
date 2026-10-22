@@ -18,7 +18,9 @@ import { parseSessionEntryLines, toSessionEntries } from "./pi/entries";
 import { projectToolResultDetails, slimToolResultMessage } from "./tool-result-details";
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
-import { checkSessionMembership, listSessionsIncremental, scanSessionFileInfo, type ScannedSessionInfo } from "./session-list-scanner";
+// `scanSessionFileInfo` is not imported: upstream uses it in `readSessionInfo()`,
+// which came from another commit (085fba9) that this port does not include.
+import { checkSessionMembership, listSessionsIncremental, type ScannedSessionInfo } from "./session-list-scanner";
 
 export { getAgentDir };
 
