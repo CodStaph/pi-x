@@ -1,9 +1,9 @@
 # Stage C2-3 / C2-4 — splitting the session runtime
 
-Status: **designed, not executed.** This records what the split needs before it can
-be done safely, so the next attempt does not rediscover it. `P2` of
+Status: **step 1 done (0bfa68c); steps 2–4 pending the merge window.** This records
+what the split needs so the next attempt does not rediscover it. `P2` of
 `docs/architecture-improvement-plan.zh-CN.md` asks for `lib/session/start.ts` and
-`lib/session/wrapper.ts`; both are blocked on the dependency below, not on effort.
+`lib/session/wrapper.ts`; both were blocked on the dependency below, not on effort.
 
 ## What is there now
 
@@ -61,10 +61,15 @@ change, but hides the dependency from `tsc` and from a reader. Rejected.
 Each step is a separate commit; `lib/rpc-manager.ts` keeps re-exports so no call site
 changes in the same step.
 
-1. **Add `startSession` to the wrapper options (no move).** Wire `startRpcSession()`
-   through it. Acceptance: `npm test` unchanged, plus one new assertion in
-   `lib/rpc-manager-extension-session-actions.test.mjs` that the injected function is
-   used instead of the module import.
+1. **Add `startSession` to the wrapper options (no move). — DONE (`0bfa68c`).**
+   `AgentSessionWrapperOptions.startSession` exists; `newSessionForExtension()` and
+   `moveToReplacementSession()` call it, `startRpcSession()` and the subagent
+   controller's `registerSession` inject `startRpcSession`, and a wrapper built
+   without one fails with a named error instead of silently importing the module.
+   Two tests in `lib/rpc-manager-extension-session-actions.test.mjs` pin both the
+   injection (arguments + `session_replaced`) and the missing-starter error.
+   **The class still lives in `lib/rpc-manager.ts`; the cycle is what step 1
+   removed.**
 2. **Move the class to `lib/session/wrapper.ts`.** Move the six shared symbols with it
    (`IDLE_RESET_EVENT_TYPES`, the two timeout resolvers, `MCP_WAIT_STOPPED_MESSAGE`,
    `PlainTextTheme`, `resolveActiveToolNames`) and re-export the ones tests import.
@@ -79,10 +84,11 @@ changes in the same step.
 
 ## Why it is not done yet
 
-- **Step 1 changes a constructor signature** used by 16 test files. It is mechanical but
-  must land on its own, and it is the kind of change a follow-up upstream merge would
-  conflict with in `lib/rpc-manager.ts` — the file the fork already drifts 652
-  structural lines in.
+- **Step 1 changed a constructor signature** used by 16 test files. It landed on its
+  own (0bfa68c) and kept every existing call working, because the option is optional.
+  A follow-up upstream merge would conflict with it in `lib/rpc-manager.ts` — the file
+  the fork already drifts 652 structural lines in — which is why the remaining steps
+  still wait for a quiet window.
 - **The plan says so.** Stage C's C3 requires "错开合并窗口"; `component-updates.yml`
   is `workflow_dispatch`, so there is no automated signal that a merge is not imminent.
   Moving 2000 lines immediately before one is the worst case in `fork-ownership.json`'s
