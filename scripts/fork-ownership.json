@@ -185,6 +185,36 @@
       "structuralDrift": 142,
       "disposition": "accepted"
     },
+    "lib/session-list-scanner.ts": {
+      "risk": "high",
+      "drift": 561,
+      "reason": "The upstream incremental scanner carries fork work on top: compactionCount is counted in ScanTotals/foldEntry and threaded through ResumePoint as a required field (upstream has no such count), which is why INDEX_FORMAT_VERSION stays 2. lib/session-list-scanner.test.mjs pins full scans, resumed scans, the persisted index and the compaction count.",
+      "structuralDrift": 561,
+      "sentinels": "elsewhere",
+      "sentinelReason": "lib/session-list-scanner.test.mjs (full/resumed equivalence, persisted index, compactionCount)",
+      "disposition": "accepted"
+    },
+    "lib/http-dispatcher.ts": {
+      "risk": "medium",
+      "drift": 66,
+      "reason": "Three upstream dispatcher fixes are ported here: the CLI's two-second CONNECT window, keeping target origins on tunnelled requests, and applying settings' httpIdleTimeoutMs. lib/http-dispatcher.test.mjs pins all three.",
+      "structuralDrift": 66,
+      "disposition": "accepted"
+    },
+    "lib/agent-event-wire.ts": {
+      "risk": "medium",
+      "drift": 54,
+      "reason": "Forwarding decisions live in lib/pi/events.ts (isForwardedEvent), entry_appended travels as a bare signal, and the fork's tool-result projection runs after upstream's provider-signature strip. Pinned by lib/agent-event-wire.test.mjs and lib/pi/events.test.mjs.",
+      "structuralDrift": 54,
+      "disposition": "accepted"
+    },
+    "components/ModelSelector.tsx": {
+      "risk": "medium",
+      "drift": 43,
+      "reason": "The fork's default-model star and its buttonTitle (used by aria-label) sit beside upstream's /model ordering through orderSelectorModels(). Pinned by components/ModelSelector.test.mjs.",
+      "structuralDrift": 31,
+      "disposition": "accepted"
+    },
     "components/FileExplorer.tsx": {
       "risk": "medium",
       "drift": 62,

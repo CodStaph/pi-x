@@ -50,6 +50,44 @@ const COSMETIC = new RegExp(
   ].join("|"),
 );
 
+/** The risk a structural drift count earns, from the manifest's own thresholds. */
+export function riskForStructural(structural, manifest) {
+  const { high, medium } = manifest.riskModel.thresholds;
+  return structural >= high ? "high" : structural >= medium ? "medium" : "low";
+}
+
+/**
+ * Compare measured rows with the manifest.
+ *
+ * Two failures matter, and they are different:
+ *   stale      — the recorded risk no longer matches the measurement;
+ *   unrecorded — meaningful drift in a file the manifest does not list at all,
+ *                which `autoPushPolicy` therefore cannot block on. Before this
+ *                check existed, such a file synced unattended and nobody noticed.
+ */
+export function classifyDriftRows(rows, manifest) {
+  const blockOn = new Set(manifest.autoPushPolicy?.blockOnRisk ?? ["high", "medium"]);
+  return rows.map((row) => {
+    const risk = riskForStructural(row.structural, manifest);
+    const recorded = manifest.driftedUpstreamFiles[row.file];
+    return {
+      ...row,
+      risk,
+      recordedRisk: recorded?.risk,
+      stale: Boolean(recorded) && recorded.risk !== risk,
+      unrecorded: !recorded && blockOn.has(risk),
+    };
+  });
+}
+
+/** Split the classified rows into the two problem lists. */
+export function driftProblems(classified) {
+  return {
+    stale: classified.filter((row) => row.stale),
+    unrecorded: classified.filter((row) => row.unrecorded),
+  };
+}
+
 function resolveBaseline(explicit) {
   if (explicit) return explicit;
   try {
@@ -98,10 +136,6 @@ const rows = files.map((file) => {
 
 rows.sort((a, b) => b.structural - a.structural);
 
-const { high, medium } = manifest.riskModel.thresholds;
-const riskFor = (structural) =>
-  structural >= high ? "high" : structural >= medium ? "medium" : "low";
-
 console.log(`baseline: ${baseline}\n`);
 console.log(
   "file".padEnd(34),
@@ -111,20 +145,19 @@ console.log(
   "  risk",
 );
 
-let drifted = 0;
-for (const row of rows) {
-  const risk = riskFor(row.structural);
-  const recorded = manifest.driftedUpstreamFiles[row.file];
-  const stale = recorded && recorded.risk !== risk ? `  <- manifest says ${recorded.risk}` : "";
-  if (stale) drifted += 1;
+const classified = classifyDriftRows(rows, manifest);
+for (const row of classified) {
+  const stale = row.stale ? `  <- manifest says ${row.recordedRisk}` : "";
+  const missing = row.unrecorded ? `  <- not in manifest (${row.risk})` : "";
   console.log(
     row.file.padEnd(34),
     String(row.total).padStart(6),
     String(row.cosmetic).padStart(9),
     String(row.structural).padStart(11),
-    `  ${risk}${stale}`,
+    `  ${row.risk}${stale}${missing}`,
   );
 }
+const { stale, unrecorded } = driftProblems(classified);
 
 const totals = rows.reduce(
   (acc, row) => ({ c: acc.c + row.cosmetic, s: acc.s + row.structural }),
@@ -135,10 +168,18 @@ console.log(
   `\ncosmetic: ${totals.c}   structural: ${totals.s}   (${structuralShare}% structural)`,
 );
 
-if (drifted > 0) {
-  console.error(`\n${drifted} file(s) disagree with scripts/fork-ownership.json — update it.`);
-  // A recorded risk that no longer matches the measured one means the manifest
-  // (and the auto-push policy built on it) is stale: fail so CI catches it.
-  process.exitCode = 1;
+if (stale.length > 0 || unrecorded.length > 0) {
+  // A recorded risk that no longer matches the measurement means the manifest
+  // (and the auto-push policy built on it) is stale.
+  if (stale.length > 0) {
+    console.error(`\n${stale.length} file(s) disagree with scripts/fork-ownership.json — update the recorded risk.`);
+  }
+  // Drift nobody recorded is drift autoPushPolicy cannot block on: an upstream
+  // edit to that file syncs unattended. Also the reason this check exists.
+  if (unrecorded.length > 0) {
+    console.error(`\n${unrecorded.length} drifted file(s) are not in scripts/fork-ownership.json:`);
+    for (const row of unrecorded) console.error(`- ${row.file} (${row.risk}, ${row.structural} structural)`);
+    console.error("Record each one with a reason, or the auto-push policy cannot block on it.");
+  }
   process.exitCode = 1;
 }
