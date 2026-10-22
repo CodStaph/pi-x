@@ -53,6 +53,9 @@ assertion.
 |---|---|---|
 | `cf3ebfb` fix(security): rotate preview-mode secrets at startup | `23929fb` | closed a proxy bypass (`x-prerender-revalidate` skipped `proxy.ts`). Conflicts: kept the fork's `network-exposure-warning` module instead of upstream's inline copy; skipped the read-only-directory test on Windows. |
 | `6425d0d` perf(server): start the pi SDK import at startup | `e515054` | auto-merged. Note: `lib/migrations` already imports `getAgentDir`, so the SDK is loaded during register() anyway; the warm-up makes that independent of the accident. Fixing the ratchet's blind spots (lazy imports, root files) raised its baseline to 73 / 92 / 25. |
+| `37d4045` fix(sw): don't hold static responses behind the cache write | `46c325c` | clean apply; the response no longer waits for the cache write. |
+| `8347ea5` fix(markdown): stop clipping two-digit ordered list numbers | `c65a8ae` | adapted: padding rule in `app/native-theme.css`, `MarkdownBody`'s `ol` sets `--ol-marker-digits`. |
+| `6d4d6b5` fix(markdown): render emphasis next to CJK punctuation | `2996447` | adds the `remark-cjk-friendly` devDependency (lock updated, tauri pin still passes). |
 | `8b9a084` fix(http): give connect attempts the CLI's two-second window | `7931cf4` | clean apply. |
 | `4c0077b` fix(http): keep proxied HTTP origins on CONNECT tunnels | `9947cfd` | clean apply; `httpIdleTimeoutMs` now matches tunnelled requests. |
 | `650d7a3` fix(http): apply settings' httpIdleTimeoutMs to the Web UI | `be6ad0a` | auto-merged into `instrumentation-node.ts` beside the migrations hook. Windows: the new `defaultAgentDir` test skips `file:///tmp/agent` (no drive letter ⇒ `fileURLToPath` rejects it). |
@@ -141,6 +144,7 @@ that check comes before the cherry-pick.
 |---|---|
 | `1a94341` perf(sessions): rescan only the appended tail | **Depends on earlier v0.11/0.12 refactors.** 513 changed lines against a scanner whose index format was rebuilt upstream (`INDEX_FORMAT_VERSION` 1 there vs 2 here), and the resume logic assumes fields those commits added. Porting it alone yields a half-migrated index. Port the scanner series as a unit, or not at all. |
 | `ac54e01` fix(files): find a changed file's own repository for its diff | **The fork's route is not upstream's.** `app/api/git/diff/route.ts` came from `6e0b9d1 feat(explorer): complete quick changes viewer`; upstream's test file never existed here (`git log --diff-filter=D` is empty), so the fix targets a different implementation. |
+| `f722a5d` fix(settings): scroll the general page across the dialog's full width | **Already solved differently.** The fork's General tab is a two-column grid above 880px with `max-width: none` (app/native-theme.css), so the scrollbar is already at the dialog edge; upstream's `> * { max-width: 600px }` would squeeze each column. |
 | `6742182` fix(build): keep .claude worktrees out of Tailwind's source scan | **Conditional.** The bug needs symlinked `.claude` worktrees (`next build` crashes in a webpack snapshot); this repo has no `.claude` directory, and the fix is a Tailwind `@source not` that can only live in `app/globals.css`, which must stay byte-identical here. Re-check when a `.claude` tree actually exists. |
 | `bf0730c` fix(files): stop overflowing panel tabs from being clipped | **Already solved differently.** The fork styles tabs with `.file-tab-bar` in `app/native-theme.css` (100% height, hidden scrollbar) instead of upstream's inline 36px bar; re-adopting upstream's inline styles would undo the CSS extraction, and its test asserts those inline styles. |
 
