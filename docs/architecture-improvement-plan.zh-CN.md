@@ -417,7 +417,12 @@ export function isBusy(phase: SessionPhase): boolean;
 | C2-2 | `lib/session/commands/*.ts`（31 个 `case` → handler） | fork-owned 逻辑，但 handler 需要 `pendingPromptCount`、`withSessionReplacement`、`emit`、`advancePhase` 等 20 余个 wrapper 私有成员 | **延后，前置 C2-4**。否则只能把 wrapper 转成 `ctx: any`，会拆掉 A 阶段刚建立的类型边界 |
 | C2-3 | `lib/session/start.ts`（`startRpcSession`，约 230 行） | 与 wrapper 构造、registry 注册、subagent controller 耦合 | **与 C2-4 同窗**。单独搬会引入 rpc-manager ↔ start.ts 的值循环，收益（8% 文件体积）不抵风险 |
 | C2-4 | `lib/session/wrapper.ts` | `fork-ownership.json`：`lib/rpc-manager.ts` structural **652 / high** | **必须独立窗口**。跨文件移动正是该文件 `reason` 警告的"clean merge 但语义错"；合并后要立即重算 drift |
+| C2-4（细化） | 见 `docs/agents/stage-c-wrapper-split.md` | 类 1974 行 + `startRpcSession` 230 行，两者**互相调用**（`newSessionForExtension` / `ctx.newSession` ↔ `new AgentSessionWrapper`）；16 个测试文件直接构造 wrapper | 需要先给 `AgentSessionWrapperOptions` 加一个可选的 `startSession` 注入（打破循环），再分四步搬移；`rpc-manager.ts` 目标 ≤ 400 行 |
 | C2-5 | `lib/composer-send.ts` | `ChatInput.tsx` structural **1087 / high** | **只抽纯判定**（`submitsSlashCommandOnEnter` 一类），不搬整条发送管线：`handleSend` 依赖 20+ props/refs，而那段 VM 测试正是防"合并不被静默改写"的哨兵 |
+
+**P2-a 已落地（2026-10-22）**：补全 22 条 medium 的 manifest 条目（含 `lib/session-reader.ts`、`lib/worktree.ts`、`components/ModelsConfig.tsx`、`app/api/agent/[id]/route.ts` 等），**未登记的 medium/high 从 22 降到 0**，manifest 现 53 条。`autoPushPolicy` 对中风险文件的拦截因此真正生效。
+
+**P2-b（C2-4 + C2-3）已设计未执行**：`docs/agents/stage-c-wrapper-split.md` 记录了循环依赖、16 个构造点、6 个共享符号，以及「先注入 `startSession` → 搬类 → 搬 start → 再 C2-2」的四步顺序与每步验收。不执行的原因是它需要改构造签名并在 2000 行移动前后撞上不可预判的上游合并窗口——正是 `fork-ownership.json` 风险模型里"clean merge 但语义错"的场景。
 
 **C2-5 已落地（2026-10-22，收窄为「纯决策 + 委托」）**：新增 `lib/composer-send.ts` 的 `runComposerSend(ctx)`，`ChatInput.handleSend` 只组装上下文并委托；`lib/composer-send.test.mjs`（9 项）验证提交顺序与「一次提交只发一次」。原 `ChatInput.test.mjs` 里两条通过 AST 提取 `handleSend` 的 VM 测试改为直接调用该函数（键盘语义的 VM 测试保持不变），并新增一条「handleSend 只委托、不自己 onSend」的源码断言。`ChatInput.tsx` 的 drift 已重算（1484 / 1106）。
 

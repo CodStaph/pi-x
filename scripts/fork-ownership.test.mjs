@@ -99,11 +99,18 @@ test("risk follows the declared structural-drift thresholds", () => {
   }
 });
 
-test("files fully adopted from upstream leave the manifest", () => {
-  // ModelsConfig was the historical style-only example (146 total / 13
-  // structural). After the v0.9.1 sync it tracks upstream exactly, so it
-  // must no longer be registered as drifted.
-  assert.equal(manifest.driftedUpstreamFiles["components/ModelsConfig.tsx"], undefined);
+test("only files registered in the manifest can require review", () => {
+  // The rule, stated with an inline manifest: a file the fork has fully adopted
+  // must not stay registered, because every later upstream touch to it would open
+  // a review PR for something the fork no longer owns. (The real manifest is
+  // checked against the measurement by `npm run drift`, not here.)
+  const inline = {
+    driftedUpstreamFiles: { "components/Owned.tsx": { risk: "low", drift: 5 } },
+    autoPushPolicy: { blockOnRisk: ["high", "medium"] },
+  };
+  const result = classifyIncomingChanges(["components/Owned.tsx", "components/Adopted.tsx"], inline);
+  assert.deepEqual(result.overlaps.map((entry) => entry.path), ["components/Owned.tsx"]);
+  assert.equal(result.highestRisk, "low");
 });
 
 test("high and medium overlaps require review; low-only does not", () => {
@@ -124,7 +131,8 @@ test("high and medium overlaps require review; low-only does not", () => {
 
 test("untouched and ignored files never trigger review", () => {
   const result = classifyIncomingChanges(
-    ["app/api/skills/route.ts", "lib/bounded-form-data.ts", "package-lock.json", ""],
+    // Neither file is in the manifest: one was never drifted, one has no entry.
+    ["app/api/skills/route.ts", "lib/settings-navigation.ts", "package-lock.json", ""],
     manifest,
   );
   assert.equal(result.reviewRequired, false);

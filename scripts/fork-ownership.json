@@ -52,6 +52,139 @@
       "structuralDrift": 415,
       "disposition": "accepted"
     },
+    "app/api/agent/[id]/route.ts": {
+      "risk": "medium",
+      "drift": 39,
+      "reason": "Command dispatch: validates the body through lib/pi/session-commands.ts, routes set_tools through setRpcSessionTools() and forwards the rest to the wrapper.",
+      "structuralDrift": 39,
+      "disposition": "accepted"
+    },    "app/api/cwd/browse/route.ts": {
+      "risk": "medium",
+      "drift": 30,
+      "reason": "Directory browsing inside the allowed roots, with the linked-directory policy.",
+      "structuralDrift": 30,
+      "disposition": "accepted"
+    },    "app/api/models-config/discover/route.ts": {
+      "risk": "medium",
+      "drift": 46,
+      "reason": "Provider model discovery endpoint used by the Models panel.",
+      "structuralDrift": 46,
+      "disposition": "accepted"
+    },    "app/api/sessions/[id]/route.ts": {
+      "risk": "medium",
+      "drift": 31,
+      "reason": "Session detail route: context/stat building, subagent-run detection, rename and cascade delete for forks.",
+      "structuralDrift": 31,
+      "disposition": "accepted"
+    },    "app/api/worktrees/route.ts": {
+      "risk": "medium",
+      "drift": 60,
+      "reason": "Worktree list/create/switch/fetch API, guarded by the same allowed-root rules as /api/files.",
+      "structuralDrift": 60,
+      "disposition": "accepted"
+    },    "components/AgentSessionPanel.tsx": {
+      "risk": "medium",
+      "drift": 188,
+      "reason": "Session info panel: cost-by-model breakdown, cache-warming status, routed model and context usage, all fork work on upstream's panel.",
+      "structuralDrift": 188,
+      "disposition": "accepted"
+    },    "components/MarkdownBody.tsx": {
+      "risk": "medium",
+      "drift": 122,
+      "reason": "GFM loader, file-reference links and the onOpenFile link context are fork work on upstream's renderer.",
+      "structuralDrift": 122,
+      "disposition": "accepted"
+    },    "components/MermaidBlock.tsx": {
+      "risk": "medium",
+      "drift": 106,
+      "reason": "Mermaid rendering for fenced blocks, including the lazy loader and its failure surface.",
+      "structuralDrift": 106,
+      "disposition": "accepted"
+    },    "components/ModelsConfig.tsx": {
+      "risk": "medium",
+      "drift": 169,
+      "reason": "The models.json editor: literal-key redaction, provider switches, catalog presets, test flow and the non-chat read-only view.",
+      "structuralDrift": 169,
+      "disposition": "accepted"
+    },    "components/TerminalPanel.tsx": {
+      "risk": "medium",
+      "drift": 50,
+      "reason": "Workspace terminal tabs (xterm + node-pty), a fork feature with no upstream counterpart.",
+      "structuralDrift": 50,
+      "disposition": "accepted"
+    },    "components/models-config-helpers.ts": {
+      "risk": "medium",
+      "drift": 62,
+      "reason": "Pure helpers extracted from ModelsConfig (saving, discovery merge, rename detection).",
+      "structuralDrift": 62,
+      "disposition": "accepted"
+    },    "hooks/useKeyboardShortcuts.ts": {
+      "risk": "medium",
+      "drift": 54,
+      "reason": "Esc stops the running agent unless a field or nearer handler took it; Ctrl+Alt+N opens a new chat.",
+      "structuralDrift": 54,
+      "disposition": "accepted"
+    },    "lib/bounded-form-data.ts": {
+      "risk": "medium",
+      "drift": 46,
+      "reason": "Bounded multipart/form-data parsing for the file-write route.",
+      "structuralDrift": 46,
+      "disposition": "accepted"
+    },    "lib/clipboard.ts": {
+      "risk": "medium",
+      "drift": 46,
+      "reason": "Clipboard adapter (native in the desktop shell, navigator.clipboard in the browser).",
+      "structuralDrift": 46,
+      "disposition": "accepted"
+    },    "lib/draft-store.ts": {
+      "risk": "medium",
+      "drift": 52,
+      "reason": "Draft persistence across composer remounts and session switches.",
+      "structuralDrift": 52,
+      "disposition": "accepted"
+    },    "lib/file-fuzzy.ts": {
+      "risk": "medium",
+      "drift": 64,
+      "reason": "Fuzzy path matching used by the file tree and mentions.",
+      "structuralDrift": 64,
+      "disposition": "accepted"
+    },    "lib/model-discovery.ts": {
+      "risk": "medium",
+      "drift": 49,
+      "reason": "Model discovery against a configured provider's upstream list.",
+      "structuralDrift": 49,
+      "disposition": "accepted"
+    },    "lib/model-scope.ts": {
+      "risk": "medium",
+      "drift": 44,
+      "reason": "enabledModels scope resolution: minimatch patterns, thinking-level pins and scope diagnostics, delegated to the SDK's resolver.",
+      "structuralDrift": 44,
+      "disposition": "accepted"
+    },    "lib/pi-types.ts": {
+      "risk": "medium",
+      "drift": 47,
+      "reason": "Structural mirrors of the SDK objects pi-web adapts to; upstream has no equivalent layer.",
+      "structuralDrift": 47,
+      "disposition": "accepted"
+    },    "lib/session-reader.ts": {
+      "risk": "medium",
+      "drift": 143,
+      "reason": "Bounded reads, path/manager caches, relation entries and the incremental list merge, on an upstream file; the scanner it feeds is pinned by lib/session-list-scanner.test.mjs.",
+      "structuralDrift": 143,
+      "disposition": "accepted"
+    },    "lib/types.ts": {
+      "risk": "medium",
+      "drift": 40,
+      "reason": "The session/message type mirror the UI uses instead of SDK types.",
+      "structuralDrift": 40,
+      "disposition": "accepted"
+    },    "lib/worktree.ts": {
+      "risk": "medium",
+      "drift": 142,
+      "reason": "Worktree resolution and git worktree operations (project grouping, branch switching, dirty-worktree refusal); upstream has no such module.",
+      "structuralDrift": 142,
+      "disposition": "accepted"
+    },
     "components/FileExplorer.tsx": {
       "risk": "medium",
       "drift": 62,
