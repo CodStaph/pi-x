@@ -339,7 +339,10 @@ try {
     assert.equal(thinkingRequests.length, 0);
     await processDetails.click();
     assert.equal(await thinking.count(), 3);
-    assert.equal(await thinking.last().innerText(), "E2E final reasoning");
+    // A collapsed card shows the reasoning's opening with whitespace folded, capped
+    // at 240 characters (dd09b5f) — not just the first line. Each of these reasonings
+    // is short, so the whole text is the preview; it also must not need a request.
+    assert.equal(await thinking.last().innerText(), "E2E final reasoning Final thinking details.");
     assert.equal(thinkingRequests.length, 0);
     for (const [index, text] of ["Intermediate thinking details.", "Follow-up thinking details.", "Final thinking details."].entries()) {
       await thinking.nth(index).click();
